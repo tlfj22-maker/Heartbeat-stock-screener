@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -48,8 +50,8 @@ st.markdown(
 st.markdown(
     """
     <div class="hero">
-      <h1>📈 Troy's Heartbeat Stock Screener</h1>
-      <p>Find large-cap stocks forming a tight base above a rising 150-day moving average, then breaking out on unusually heavy volume.</p>
+      <h1>📈 Troy's Heartbeat Stock Screener V3</h1>
+      <p>Rank strong companies by breakout readiness, time-adjusted volume pace, and technical quality.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -100,6 +102,25 @@ class Params:
     min_price: float = 5.0
     min_avg_dollar_volume: float = 25_000_000
 
+
+
+def market_elapsed_fraction() -> tuple[float, str]:
+    """Return the fraction of the regular U.S. session elapsed and a readable label."""
+    now = datetime.now(ZoneInfo("America/New_York"))
+    if now.weekday() >= 5:
+        return 1.0, "Market closed — using full-day volume"
+    open_dt = datetime.combine(now.date(), time(9, 30), tzinfo=now.tzinfo)
+    close_dt = datetime.combine(now.date(), time(16, 0), tzinfo=now.tzinfo)
+    if now <= open_dt:
+        return 1.0, "Pre-market — using prior/full-day volume"
+    if now >= close_dt:
+        return 1.0, "Market closed — using full-day volume"
+    elapsed = (now - open_dt).total_seconds()
+    session = (close_dt - open_dt).total_seconds()
+    # A small floor prevents extreme readings immediately after the open.
+    fraction = min(max(elapsed / session, 0.08), 1.0)
+    return fraction, f"Market session {fraction:.0%} complete"
+
 def clean_ticker(t: str) -> str:
     return t.strip().upper().replace(".", "-")
 
@@ -123,7 +144,7 @@ def frame_for(raw: pd.DataFrame, ticker: str, total: int) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
-def technical_row(ticker: str, df: pd.DataFrame, spy: pd.DataFrame, p: Params) -> Optional[dict]:
+def technical_row(ticker: str, df: pd.DataFrame, spy: pd.DataFrame, p: Params, session_fraction: float) -> Optional[dict]:
     if len(df) < p.ma_days + 35:
         return None
 
@@ -157,6 +178,8 @@ def technical_row(ticker: str, df: pd.DataFrame, spy: pd.DataFrame, p: Params) -
     distance_to_breakout = (price / prior_high - 1) * 100 if prior_high else np.nan
 
     volume_ratio = float(v.iloc[-1]) / av_now if av_now else np.nan
+    intraday_volume_pace = volume_ratio / session_fraction if session_fraction > 0 else volume_ratio
+    intraday_volume_pace = min(intraday_volume_pace, 8.0) if pd.notna(intraday_volume_pace) else np.nan
 
     rs = np.nan
     if not spy.empty:
@@ -165,32 +188,39 @@ def technical_row(ticker: str, df: pd.DataFrame, spy: pd.DataFrame, p: Params) -
         if len(common) > 64:
             rs = (c.loc[common].pct_change(63).iloc[-1] - sc.loc[common].pct_change(63).iloc[-1]) * 100
 
-    tech = 0
-    tech += 15 if price > ma_now else 0
-    tech += 15 if slope > .02 else 10 if slope > 0 else 3
-    tech += 8 if 0 <= distance <= p.max_extension else 4 if price > ma_now else 0
-    tech += 12 if base_range <= p.max_base_range else 7 if base_range <= p.max_base_range * 1.5 else 0
-    tech += 10 if breakout else 6 if breakout_pct >= -.03 else 0
-    tech += 10 if volume_ratio >= p.min_volume_ratio else 6 if volume_ratio >= 1.5 else 2 if volume_ratio >= 1 else 0
+    quality_score = 0
+    quality_score += 22 if price > ma_now else 0
+    quality_score += 22 if slope > .02 else 15 if slope > 0 else 4
+    quality_score += 14 if 0 <= distance <= p.max_extension else 7 if price > ma_now else 0
+    quality_score += 20 if base_range <= p.max_base_range else 11 if base_range <= p.max_base_range * 1.5 else 0
+    quality_score += 12 if pd.notna(rs) and rs >= 10 else 7 if pd.notna(rs) and rs > 0 else 0
+    quality_score = min(quality_score, 100)
 
-    heartbeat = (
-        price > ma_now and slope > 0 and distance <= p.max_extension and
-        base_range <= p.max_base_range and breakout and volume_ratio >= p.min_volume_ratio
-    )
-    almost = (
-        not heartbeat and price > ma_now and slope >= 0 and
-        base_range <= p.max_base_range * 1.35 and breakout_pct >= -.03 and volume_ratio >= 1.2
-    )
+    proximity_points = 45 if breakout_pct >= 0 else 40 if breakout_pct >= -.01 else 32 if breakout_pct >= -.03 else 20 if breakout_pct >= -.07 else 5
+    volume_points = 35 if intraday_volume_pace >= p.min_volume_ratio else 27 if intraday_volume_pace >= 1.2 else 18 if intraday_volume_pace >= 1.0 else 7 if intraday_volume_pace >= .7 else 0
+    structure_points = 20 if base_range <= p.max_base_range else 10 if base_range <= p.max_base_range * 1.35 else 0
+    readiness_score = min(proximity_points + volume_points + structure_points, 100)
+
+    combined_score = round(quality_score * .45 + readiness_score * .55, 1)
+
+    trend_ok = price > ma_now and slope >= 0
+    base_ok = base_range <= p.max_base_range * 1.35
+    heads_up = bool(trend_ok and base_ok and breakout_pct >= -.03 and intraday_volume_pace >= 1.2)
+    trigger = bool(trend_ok and base_ok and breakout_pct >= -.01 and intraday_volume_pace >= p.min_volume_ratio)
+    heartbeat = bool(trigger and breakout_pct >= 0)
+    almost = bool(not heartbeat and heads_up)
 
     setup = "Tier 1 — Heartbeat" if heartbeat else "Tier 2 — Almost there" if almost else "Tier 3 — Watch"
 
     if heartbeat:
-        status = "Confirmed breakout"
-    elif price > ma_now and slope >= 0 and breakout_pct >= -.02 and volume_ratio >= 1.2:
-        status = "Breakout close — volume building"
-    elif price > ma_now and slope >= 0 and breakout_pct >= -.03:
+        status = "🚨 Confirmed breakout"
+    elif trigger:
+        status = "🔥 Trigger zone"
+    elif heads_up:
+        status = "👀 Heads-up — close and building"
+    elif trend_ok and breakout_pct >= -.03:
         status = "Near breakout — needs volume"
-    elif price > ma_now and slope >= 0:
+    elif trend_ok:
         status = "Healthy trend — still forming"
     else:
         status = "Not ready"
@@ -203,28 +233,30 @@ def technical_row(ticker: str, df: pd.DataFrame, spy: pd.DataFrame, p: Params) -
     if base_range <= p.max_base_range:
         reasons.append("tight base")
     if breakout_pct >= -.03:
-        reasons.append("within 3% of breakout")
-    if volume_ratio >= p.min_volume_ratio:
-        reasons.append(f"volume {volume_ratio:.2f}x")
-    elif volume_ratio >= 1.0:
-        reasons.append("volume improving")
-    reason = ", ".join(reasons[:4]) if reasons else "setup still developing"
+        reasons.append(f"{abs(distance_to_breakout):.1f}% from breakout" if breakout_pct < 0 else "above breakout")
+    if intraday_volume_pace >= p.min_volume_ratio:
+        reasons.append(f"volume pace {intraday_volume_pace:.2f}x")
+    elif intraday_volume_pace >= 1.0:
+        reasons.append(f"volume pace {intraday_volume_pace:.2f}x")
+    reason = ", ".join(reasons[:5]) if reasons else "setup still developing"
 
-    alert_ready = bool(
-        price > ma_now and slope >= 0 and base_range <= p.max_base_range * 1.35 and
-        breakout_pct >= -.02 and volume_ratio >= p.min_volume_ratio
-    )
+    alert_stage = "TRIGGER" if trigger else "HEADS-UP" if heads_up else ""
+    alert_ready = bool(trigger)
 
     return {
         "Ticker": ticker,
         "Setup": setup,
-        "Score": round(tech, 1),
+        "Score": combined_score,
+        "Quality Score": round(quality_score, 1),
+        "Readiness Score": round(readiness_score, 1),
         "Price": price,
         "Breakout Level": prior_high,
         "Distance to Breakout %": distance_to_breakout,
         "Volume Ratio": volume_ratio,
+        "Intraday Volume Pace": intraday_volume_pace,
         "Status": status,
         "Why": reason,
+        "Alert Stage": alert_stage,
         "Alert Ready": alert_ready,
         "TradingView": f"https://www.tradingview.com/chart/?symbol={ticker}",
         "MA Slope %": slope * 100,
@@ -312,6 +344,9 @@ params = Params(
 
 tickers = [clean_ticker(t) for t in custom.split(",") if t.strip()] if custom.strip() else UNIVERSES[universe_name]
 
+session_fraction, session_label = market_elapsed_fraction()
+st.caption(f"⏱️ {session_label}. Intraday volume pace adjusts today’s volume for time elapsed.")
+
 if st.button("🔍 Run heartbeat scan", type="primary", use_container_width=True):
     with st.spinner(f"Scanning {len(tickers)} stocks…"):
         spy_raw = download_prices(("SPY",))
@@ -322,7 +357,7 @@ if st.button("🔍 Run heartbeat scan", type="primary", use_container_width=True
         bar = st.progress(0)
         for i, ticker in enumerate(tickers):
             df = frame_for(raw, ticker, len(tickers))
-            row = technical_row(ticker, df, spy, params)
+            row = technical_row(ticker, df, spy, params, session_fraction)
             if row:
                 if include_fund:
                     f = fundamentals(ticker)
@@ -337,21 +372,37 @@ if st.button("🔍 Run heartbeat scan", type="primary", use_container_width=True
         st.warning("No usable results were returned. Try another universe or loosen the filters.")
     else:
         results = results.sort_values(
-            ["Setup", "Score"],
-            ascending=[True, False]
+            ["Alert Ready", "Readiness Score", "Score"],
+            ascending=[False, False, False]
         )
         st.session_state["results"] = results
 
 if "results" in st.session_state:
     results = st.session_state["results"]
 
-    t1 = int((results["Setup"] == "Tier 1 — Heartbeat").sum())
-    t2 = int((results["Setup"] == "Tier 2 — Almost there").sum())
+    triggers = int((results["Alert Stage"] == "TRIGGER").sum())
+    headsups = int((results["Alert Stage"] == "HEADS-UP").sum())
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Tier 1 matches", t1)
-    m2.metric("Tier 2 candidates", t2)
+    m1.metric("Trigger alerts", triggers)
+    m2.metric("Heads-up alerts", headsups)
     m3.metric("Stocks ranked", len(results))
-    m4.metric("Best score", f"{results['Score'].max():.1f}")
+    m4.metric("Top readiness", f"{results['Readiness Score'].max():.0f}")
+
+    st.subheader("🚦 Breakout alert board")
+    alert_board = results.sort_values(["Readiness Score", "Score"], ascending=False).head(8).copy()
+    alert_cols = ["Ticker", "Alert Stage", "Status", "Readiness Score", "Distance to Breakout %", "Intraday Volume Pace", "Score", "TradingView"]
+    st.dataframe(
+        alert_board[alert_cols],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Readiness Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+            "Score": st.column_config.NumberColumn("Combined", format="%.1f"),
+            "Distance to Breakout %": st.column_config.NumberColumn("To breakout", format="%.2f%%"),
+            "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
+            "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
+        },
+    )
 
     filter_setups = st.multiselect(
         "Show",
@@ -364,7 +415,7 @@ if "results" in st.session_state:
         st.info("Nothing is currently in the selected tiers.")
     else:
         preferred = [
-            "Ticker","Setup","Score","Status","Why","Price","Breakout Level","Distance to Breakout %","Volume Ratio","Alert Ready","TradingView","MA Slope %",
+            "Ticker","Alert Stage","Setup","Readiness Score","Quality Score","Score","Status","Why","Price","Breakout Level","Distance to Breakout %","Intraday Volume Pace","Volume Ratio","Alert Ready","TradingView","MA Slope %",
             "Distance From 150D MA %","Base Range %","Breakout %","RS vs SPY 3M %",
             "Revenue Growth %","EPS Growth %","FCF Margin %","Gross Margin %",
             "Institutional Ownership %","Insider Ownership %","Forward P/E",
@@ -385,6 +436,9 @@ if "results" in st.session_state:
             column_config={
                 "Price": st.column_config.NumberColumn(format="$%.2f"),
                 "Volume Ratio": st.column_config.NumberColumn(format="%.2fx"),
+                "Intraday Volume Pace": st.column_config.NumberColumn(format="%.2fx"),
+                "Readiness Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+                "Quality Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
                 "Breakout Level": st.column_config.NumberColumn(format="$%.2f"),
                 "Distance to Breakout %": st.column_config.NumberColumn(format="%.2f%%"),
                 "Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.1f"),
