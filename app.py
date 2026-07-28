@@ -50,16 +50,21 @@ st.markdown(
 st.markdown(
     """
     <div class="hero">
-      <h1>📈 Troy's Heartbeat Stock Screener V3</h1>
-      <p>Rank strong companies by breakout readiness, time-adjusted volume pace, and technical quality.</p>
+      <h1>📈 Troy's Heartbeat Stock Screener V3.1</h1>
+      <p>Separate breakout triggers, unusual-volume watches, strong setups forming, and AI pullbacks near the 200-day moving average.</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
 AI_TICKERS = [
-    "NVDA","AVGO","TSM","MU","ANET","ORCL","VRT","ETN","PWR","CEG","KLAC","MRVL",
-    "CRDO","CLS","GEV","AMAT","LRCX","COHR","LITE","APH","MOD","FIX","PLTR","ARM"
+    # Semiconductors, networking, memory and equipment
+    "NVDA","AMD","AVGO","TSM","MU","ANET","ARM","MRVL","CRDO","KLAC","AMAT","LRCX",
+    "ASML","QCOM","INTC","ADI","MCHP","ON","MPWR","COHR","LITE","APH",
+    # Data-center power, cooling, construction and infrastructure
+    "VRT","ETN","PWR","CEG","GEV","FIX","CLS","MOD","SMCI","DELL","HPE",
+    # AI software, cloud and platforms
+    "MSFT","GOOGL","AMZN","META","ORCL","PLTR","CRM","NOW","SNOW","DDOG","MDB","AI"
 ]
 FINANCE_TICKERS = [
     "JPM","BAC","WFC","C","GS","MS","SCHW","BLK","AXP","V","MA","SPGI","CME","ICE","CB"
@@ -151,11 +156,13 @@ def technical_row(ticker: str, df: pd.DataFrame, spy: pd.DataFrame, p: Params, s
     c = df["Close"].astype(float)
     v = df["Volume"].astype(float)
     ma = c.rolling(p.ma_days).mean()
+    ma200 = c.rolling(200).mean()
     av = v.rolling(p.avg_volume_days).mean()
     adv = (c * v).rolling(p.avg_volume_days).mean()
 
     price = float(c.iloc[-1])
     ma_now = float(ma.iloc[-1])
+    ma200_now = float(ma200.iloc[-1])
     av_now = float(av.iloc[-1])
     dollar_vol = float(adv.iloc[-1])
 
@@ -166,6 +173,10 @@ def technical_row(ticker: str, df: pd.DataFrame, spy: pd.DataFrame, p: Params, s
     ma_then = float(ma.iloc[-1 - slope_days])
     slope = ma_now / ma_then - 1 if ma_then else np.nan
     distance = price / ma_now - 1 if ma_now else np.nan
+    ma200_then = float(ma200.iloc[-1 - slope_days])
+    ma200_slope = ma200_now / ma200_then - 1 if ma200_then else np.nan
+    distance_200 = price / ma200_now - 1 if ma200_now else np.nan
+    pullback_200_watch = bool(-0.03 <= distance_200 <= 0.06 and ma200_slope >= -0.01)
 
     base = c.iloc[-p.base_days:]
     base_low, base_high = float(base.min()), float(base.max())
@@ -178,8 +189,11 @@ def technical_row(ticker: str, df: pd.DataFrame, spy: pd.DataFrame, p: Params, s
     distance_to_breakout = (price / prior_high - 1) * 100 if prior_high else np.nan
 
     volume_ratio = float(v.iloc[-1]) / av_now if av_now else np.nan
-    intraday_volume_pace = volume_ratio / session_fraction if session_fraction > 0 else volume_ratio
-    intraday_volume_pace = min(intraday_volume_pace, 8.0) if pd.notna(intraday_volume_pace) else np.nan
+    # Conservative time adjustment. Volume is naturally front/back loaded, so a
+    # straight division by elapsed time exaggerates midday pace. The exponent
+    # tempers that estimate until true historical intraday profiles are added.
+    intraday_volume_pace = volume_ratio / (session_fraction ** 0.65) if session_fraction > 0 else volume_ratio
+    intraday_volume_pace = min(intraday_volume_pace, 5.0) if pd.notna(intraday_volume_pace) else np.nan
 
     rs = np.nan
     if not spy.empty:
@@ -261,6 +275,10 @@ def technical_row(ticker: str, df: pd.DataFrame, spy: pd.DataFrame, p: Params, s
         "TradingView": f"https://www.tradingview.com/chart/?symbol={ticker}",
         "MA Slope %": slope * 100,
         "Distance From 150D MA %": distance * 100,
+        "200D MA": ma200_now,
+        "Distance From 200D MA %": distance_200 * 100,
+        "200D MA Slope %": ma200_slope * 100,
+        "AI 200D Pullback Watch": pullback_200_watch and ticker in AI_TICKERS,
         "Base Range %": base_range * 100,
         "Breakout %": breakout_pct * 100,
         "RS vs SPY 3M %": rs,
@@ -388,21 +406,82 @@ if "results" in st.session_state:
     m3.metric("Stocks ranked", len(results))
     m4.metric("Top readiness", f"{results['Readiness Score'].max():.0f}")
 
-    st.subheader("🚦 Breakout alert board")
-    alert_board = results.sort_values(["Readiness Score", "Score"], ascending=False).head(8).copy()
-    alert_cols = ["Ticker", "Alert Stage", "Status", "Readiness Score", "Distance to Breakout %", "Intraday Volume Pace", "Score", "TradingView"]
-    st.dataframe(
-        alert_board[alert_cols],
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Readiness Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-            "Score": st.column_config.NumberColumn("Combined", format="%.1f"),
-            "Distance to Breakout %": st.column_config.NumberColumn("To breakout", format="%.2f%%"),
-            "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
-            "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
-        },
-    )
+    st.subheader("🚦 Closest to trigger")
+    closest = results[results["Distance to Breakout %"] >= -5].sort_values(
+        ["Alert Ready", "Distance to Breakout %", "Intraday Volume Pace"],
+        ascending=[False, False, False],
+    ).head(8).copy()
+    trigger_cols = ["Ticker", "Alert Stage", "Status", "Distance to Breakout %", "Intraday Volume Pace", "Readiness Score", "TradingView"]
+    if closest.empty:
+        st.info("No stocks are currently within 5% of their breakout level.")
+    else:
+        st.dataframe(
+            closest[trigger_cols], use_container_width=True, hide_index=True,
+            column_config={
+                "Distance to Breakout %": st.column_config.NumberColumn("To breakout", format="%.2f%%"),
+                "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
+                "Readiness Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
+            },
+        )
+
+    st.subheader("⚡ Unusual-volume watch")
+    unusual = results[results["Intraday Volume Pace"] >= volume_ratio].sort_values(
+        ["Intraday Volume Pace", "Distance to Breakout %"], ascending=[False, False]
+    ).head(8).copy()
+    unusual_cols = ["Ticker", "Intraday Volume Pace", "Distance to Breakout %", "Status", "Quality Score", "TradingView"]
+    if unusual.empty:
+        st.info(f"No stocks currently have conservative volume pace of {volume_ratio:.1f}× or higher.")
+    else:
+        st.dataframe(
+            unusual[unusual_cols], use_container_width=True, hide_index=True,
+            column_config={
+                "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
+                "Distance to Breakout %": st.column_config.NumberColumn("To breakout", format="%.2f%%"),
+                "Quality Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
+            },
+        )
+
+    st.subheader("🏗️ Strong setups still forming")
+    forming = results[(results["Distance to Breakout %"] < -5) & (results["Quality Score"] >= 60)].sort_values(
+        ["Quality Score", "Distance to Breakout %"], ascending=[False, False]
+    ).head(8).copy()
+    forming_cols = ["Ticker", "Quality Score", "Distance to Breakout %", "Intraday Volume Pace", "Why", "TradingView"]
+    if forming.empty:
+        st.info("No high-quality setups are currently in the forming bucket.")
+    else:
+        st.dataframe(
+            forming[forming_cols], use_container_width=True, hide_index=True,
+            column_config={
+                "Quality Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+                "Distance to Breakout %": st.column_config.NumberColumn("To breakout", format="%.2f%%"),
+                "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
+                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
+            },
+        )
+
+    st.subheader("🧲 AI pullbacks near the 200-day moving average")
+    ai200 = results[results["AI 200D Pullback Watch"] == True].copy()
+    ai200["Absolute 200D Distance"] = ai200["Distance From 200D MA %"].abs()
+    ai200 = ai200.sort_values(["Absolute 200D Distance", "Quality Score"], ascending=[True, False]).head(12)
+    ai200_cols = ["Ticker", "Price", "200D MA", "Distance From 200D MA %", "200D MA Slope %", "Quality Score", "Intraday Volume Pace", "TradingView"]
+    if ai200.empty:
+        st.info("No scanned AI stocks are currently within 6% above or 3% below a stable/rising 200-day moving average.")
+    else:
+        st.dataframe(
+            ai200[ai200_cols], use_container_width=True, hide_index=True,
+            column_config={
+                "Price": st.column_config.NumberColumn(format="$%.2f"),
+                "200D MA": st.column_config.NumberColumn(format="$%.2f"),
+                "Distance From 200D MA %": st.column_config.NumberColumn("From 200D MA", format="%.2f%%"),
+                "200D MA Slope %": st.column_config.NumberColumn("200D slope", format="%.2f%%"),
+                "Quality Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+                "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
+                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
+            },
+        )
+    st.caption("The 200-day moving average can act as support during a major pullback, but a stock can also break below it. Confirm price stabilization and avoid treating proximity alone as a buy signal.")
 
     filter_setups = st.multiselect(
         "Show",
@@ -416,7 +495,7 @@ if "results" in st.session_state:
     else:
         preferred = [
             "Ticker","Alert Stage","Setup","Readiness Score","Quality Score","Score","Status","Why","Price","Breakout Level","Distance to Breakout %","Intraday Volume Pace","Volume Ratio","Alert Ready","TradingView","MA Slope %",
-            "Distance From 150D MA %","Base Range %","Breakout %","RS vs SPY 3M %",
+            "Distance From 150D MA %","200D MA","Distance From 200D MA %","200D MA Slope %","AI 200D Pullback Watch","Base Range %","Breakout %","RS vs SPY 3M %",
             "Revenue Growth %","EPS Growth %","FCF Margin %","Gross Margin %",
             "Institutional Ownership %","Insider Ownership %","Forward P/E",
             "Analyst Target Upside %","Market Cap"
@@ -440,6 +519,10 @@ if "results" in st.session_state:
                 "Readiness Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
                 "Quality Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
                 "Breakout Level": st.column_config.NumberColumn(format="$%.2f"),
+                "200D MA": st.column_config.NumberColumn(format="$%.2f"),
+                "Distance From 200D MA %": st.column_config.NumberColumn(format="%.2f%%"),
+                "200D MA Slope %": st.column_config.NumberColumn(format="%.2f%%"),
+                "AI 200D Pullback Watch": st.column_config.CheckboxColumn(),
                 "Distance to Breakout %": st.column_config.NumberColumn(format="%.2f%%"),
                 "Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.1f"),
                 "Alert Ready": st.column_config.CheckboxColumn(),
