@@ -92,7 +92,7 @@ UNIVERSES = {
 class Params:
     ma_days: int = 150
     avg_volume_days: int = 50
-    min_volume_ratio: float = 2.0
+    min_volume_ratio: float = 1.5
     base_days: int = 40
     max_base_range: float = 0.22
     breakout_days: int = 40
@@ -154,6 +154,7 @@ def technical_row(ticker: str, df: pd.DataFrame, spy: pd.DataFrame, p: Params) -
     prior_high = float(prior.max())
     breakout_pct = price / prior_high - 1 if prior_high else np.nan
     breakout = price >= prior_high
+    distance_to_breakout = (price / prior_high - 1) * 100 if prior_high else np.nan
 
     volume_ratio = float(v.iloc[-1]) / av_now if av_now else np.nan
 
@@ -183,12 +184,49 @@ def technical_row(ticker: str, df: pd.DataFrame, spy: pd.DataFrame, p: Params) -
 
     setup = "Tier 1 — Heartbeat" if heartbeat else "Tier 2 — Almost there" if almost else "Tier 3 — Watch"
 
+    if heartbeat:
+        status = "Confirmed breakout"
+    elif price > ma_now and slope >= 0 and breakout_pct >= -.02 and volume_ratio >= 1.2:
+        status = "Breakout close — volume building"
+    elif price > ma_now and slope >= 0 and breakout_pct >= -.03:
+        status = "Near breakout — needs volume"
+    elif price > ma_now and slope >= 0:
+        status = "Healthy trend — still forming"
+    else:
+        status = "Not ready"
+
+    reasons = []
+    if price > ma_now:
+        reasons.append("above 150D MA")
+    if slope > 0:
+        reasons.append("rising trend")
+    if base_range <= p.max_base_range:
+        reasons.append("tight base")
+    if breakout_pct >= -.03:
+        reasons.append("within 3% of breakout")
+    if volume_ratio >= p.min_volume_ratio:
+        reasons.append(f"volume {volume_ratio:.2f}x")
+    elif volume_ratio >= 1.0:
+        reasons.append("volume improving")
+    reason = ", ".join(reasons[:4]) if reasons else "setup still developing"
+
+    alert_ready = bool(
+        price > ma_now and slope >= 0 and base_range <= p.max_base_range * 1.35 and
+        breakout_pct >= -.02 and volume_ratio >= p.min_volume_ratio
+    )
+
     return {
         "Ticker": ticker,
         "Setup": setup,
         "Score": round(tech, 1),
         "Price": price,
+        "Breakout Level": prior_high,
+        "Distance to Breakout %": distance_to_breakout,
         "Volume Ratio": volume_ratio,
+        "Status": status,
+        "Why": reason,
+        "Alert Ready": alert_ready,
+        "TradingView": f"https://www.tradingview.com/chart/?symbol={ticker}",
         "MA Slope %": slope * 100,
         "Distance From 150D MA %": distance * 100,
         "Base Range %": base_range * 100,
@@ -249,7 +287,7 @@ def fundamentals(ticker: str) -> dict:
 with st.expander("⚙️ Screener settings", expanded=False):
     c1, c2, c3 = st.columns(3)
     universe_name = c1.selectbox("Universe", list(UNIVERSES.keys()))
-    volume_ratio = c2.slider("Minimum volume ratio", 1.0, 4.0, 2.0, .1)
+    volume_ratio = c2.slider("Minimum volume ratio", 1.0, 4.0, 1.5, .1)
     base_days = c3.slider("Base length", 15, 90, 40, 5)
 
     c4, c5, c6 = st.columns(3)
@@ -318,7 +356,7 @@ if "results" in st.session_state:
     filter_setups = st.multiselect(
         "Show",
         ["Tier 1 — Heartbeat", "Tier 2 — Almost there", "Tier 3 — Watch"],
-        default=["Tier 1 — Heartbeat", "Tier 2 — Almost there"],
+        default=["Tier 1 — Heartbeat", "Tier 2 — Almost there", "Tier 3 — Watch"],
     )
     shown = results[results["Setup"].isin(filter_setups)].copy()
 
@@ -326,7 +364,7 @@ if "results" in st.session_state:
         st.info("Nothing is currently in the selected tiers.")
     else:
         preferred = [
-            "Ticker","Setup","Score","Price","Volume Ratio","MA Slope %",
+            "Ticker","Setup","Score","Status","Why","Price","Breakout Level","Distance to Breakout %","Volume Ratio","Alert Ready","TradingView","MA Slope %",
             "Distance From 150D MA %","Base Range %","Breakout %","RS vs SPY 3M %",
             "Revenue Growth %","EPS Growth %","FCF Margin %","Gross Margin %",
             "Institutional Ownership %","Insider Ownership %","Forward P/E",
@@ -347,7 +385,11 @@ if "results" in st.session_state:
             column_config={
                 "Price": st.column_config.NumberColumn(format="$%.2f"),
                 "Volume Ratio": st.column_config.NumberColumn(format="%.2fx"),
+                "Breakout Level": st.column_config.NumberColumn(format="$%.2f"),
+                "Distance to Breakout %": st.column_config.NumberColumn(format="%.2f%%"),
                 "Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.1f"),
+                "Alert Ready": st.column_config.CheckboxColumn(),
+                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
             },
         )
 
