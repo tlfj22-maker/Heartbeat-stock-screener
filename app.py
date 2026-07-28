@@ -49,8 +49,8 @@ st.markdown(
 st.markdown(
     """
     <div class="hero">
-      <h1>📈 Troy's Heartbeat Stock Screener V4.0</h1>
-      <p>Opportunity Score, Institutional Score, AI leadership heatmap, breakout readiness, unusual volume, and major pullback monitoring.</p>
+      <h1>📈 Troy's Heartbeat Stock Screener V4.0.1</h1>
+      <p>Opportunity Score, Institutional Score, AI leadership heatmap, breakout readiness, unusual volume, daily semiconductor pullbacks, and major pullback monitoring.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -109,6 +109,11 @@ AI_GROUPS = {
 }
 
 AI_TICKERS = sorted({ticker for members in AI_GROUPS.values() for ticker in members})
+AI_SEMI_PULLBACK_TICKERS = sorted(set(
+    AI_GROUPS["AI Chips"]
+    + AI_GROUPS["Memory & Storage"]
+    + AI_GROUPS["Semiconductor Equipment"]
+))
 TICKER_TO_GROUPS: dict[str, list[str]] = {}
 for group, members in AI_GROUPS.items():
     for ticker in members:
@@ -358,6 +363,9 @@ def technical_row(
     adv = (c * v).rolling(p.avg_volume_days).mean()
 
     price = safe_last(c)
+    prior_close = float(c.iloc[-2]) if len(c) >= 2 else np.nan
+    day_change_pct = (price / prior_close - 1) * 100 if prior_close and np.isfinite(prior_close) else np.nan
+    day_dollar_change = price - prior_close if prior_close and np.isfinite(prior_close) else np.nan
     ma50_now = safe_last(ma50)
     ma150_now = safe_last(ma150)
     ma200_now = safe_last(ma200)
@@ -485,6 +493,10 @@ def technical_row(
         "Institutional Score": institutional_score,
         "Opportunity Score": np.nan,  # Filled after sector strength is calculated.
         "Price": price,
+        "Previous Close": prior_close,
+        "Day Change $": day_dollar_change,
+        "Day Change %": day_change_pct,
+        "AI Semi Pullback": ticker in AI_SEMI_PULLBACK_TICKERS and pd.notna(day_change_pct) and day_change_pct < 0,
         "Breakout Level": prior_high,
         "Distance to Breakout %": distance_to_breakout,
         "Volume Ratio": volume_ratio,
@@ -628,7 +640,7 @@ tickers = [clean_ticker(t) for t in custom.split(",") if t.strip()] if custom.st
 session_fraction, session_label = market_elapsed_fraction()
 st.caption(f"⏱️ {session_label}. Selected universe: {len(tickers)} stocks. Intraday volume pace adjusts today's volume for time elapsed.")
 
-if st.button("🔍 Run V4.0 intelligence scan", type="primary", use_container_width=True):
+if st.button("🔍 Run V4.0.1 intelligence scan", type="primary", use_container_width=True):
     with st.spinner(f"Scanning {len(tickers)} stocks…"):
         benchmarks = download_prices(("SPY", "NVDA"))
         spy = frame_for(benchmarks, "SPY", 2)
@@ -702,7 +714,7 @@ if "results_v4" in st.session_state:
     results = st.session_state["results_v4"]
     heatmap = st.session_state.get("heatmap_v4", pd.DataFrame())
 
-    st.subheader("🧠 V4.0 Intelligence Dashboard")
+    st.subheader("🧠 V4.0.1 Intelligence Dashboard")
     top_opportunity = results.iloc[0]
     top_institutional = results.sort_values("Institutional Score", ascending=False).iloc[0]
     strongest_group = heatmap.iloc[0] if not heatmap.empty else None
@@ -731,6 +743,37 @@ if "results_v4" in st.session_state:
                 "Average RS vs SPY": st.column_config.NumberColumn(format="%.1f%%"),
             },
         )
+
+    st.subheader("📉 Biggest AI semiconductor pullbacks today")
+    semi_pullbacks = results[
+        results["Ticker"].isin(AI_SEMI_PULLBACK_TICKERS)
+        & results["Day Change %"].notna()
+        & (results["Day Change %"] < 0)
+    ].sort_values("Day Change %", ascending=True).head(15).copy()
+
+    if semi_pullbacks.empty:
+        st.info("No scanned AI semiconductor companies are currently down on the day.")
+    else:
+        st.dataframe(
+            semi_pullbacks[[
+                "Ticker","AI Groups","Price","Day Change %","Day Change $",
+                "Intraday Volume Pace","Opportunity Score","Institutional Score",
+                "Distance From 200D MA %","TradingView"
+            ]],
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Day Change %": st.column_config.NumberColumn("Today's pullback", format="%.2f%%"),
+                "Day Change $": st.column_config.NumberColumn("Dollar move", format="$%.2f"),
+                "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
+                "Opportunity Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+                "Institutional Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+                "Distance From 200D MA %": st.column_config.NumberColumn("From 200D MA", format="%.2f%%"),
+                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
+            },
+        )
+    st.caption("This ranks the largest same-day percentage declines among AI chips, memory/storage, and semiconductor-equipment companies. A large one-day drop can be a buying opportunity or a warning; confirm the news, earnings context, volume, and technical support before acting.")
 
     a1, a2 = st.columns(2)
     with a1:
@@ -771,7 +814,7 @@ if "results_v4" in st.session_state:
         )
 
     st.subheader("🚦 Closest to trigger")
-    closest = results[results["Distance to Breakout %"] >= -5].sort_values(
+    closest = results[results["Distance to Breakout %"].between(-5, 1, inclusive="both")].sort_values(
         ["Alert Ready", "Distance to Breakout %", "Intraday Volume Pace"],
         ascending=[False, False, False],
     ).head(10)
@@ -838,7 +881,7 @@ if "results_v4" in st.session_state:
     st.subheader("📋 Full ranked intelligence table")
     preferred = [
         "Ticker","AI Groups","Opportunity Score","Institutional Score","Readiness Score","Quality Score","Setup","Status","Why",
-        "Price","Breakout Level","Distance to Breakout %","Intraday Volume Pace","Volume Ratio","RSI 14","CMF 20",
+        "Price","Previous Close","Day Change $","Day Change %","AI Semi Pullback","Breakout Level","Distance to Breakout %","Intraday Volume Pace","Volume Ratio","RSI 14","CMF 20",
         "OBV Trend 20D %","A/D Trend 20D %","Up/Down Volume Ratio","RS vs SPY 3M %","RS vs NVDA 3M %",
         "MA50","MA150","200D MA","50D MA Slope %","150D MA Slope %","200D MA Slope %",
         "Distance From 150D MA %","Distance From 200D MA %","AI 200D Pullback Watch","Base Range %","ATR Compression",
@@ -860,6 +903,10 @@ if "results_v4" in st.session_state:
             "Readiness Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
             "Quality Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
             "Price": st.column_config.NumberColumn(format="$%.2f"),
+            "Previous Close": st.column_config.NumberColumn(format="$%.2f"),
+            "Day Change $": st.column_config.NumberColumn(format="$%.2f"),
+            "Day Change %": st.column_config.NumberColumn(format="%.2f%%"),
+            "AI Semi Pullback": st.column_config.CheckboxColumn(),
             "Breakout Level": st.column_config.NumberColumn(format="$%.2f"),
             "MA50": st.column_config.NumberColumn(format="$%.2f"),
             "MA150": st.column_config.NumberColumn(format="$%.2f"),
@@ -876,9 +923,9 @@ if "results_v4" in st.session_state:
     )
 
     st.download_button(
-        "⬇️ Download V4.0 results",
+        "⬇️ Download V4.0.1 results",
         results.to_csv(index=False).encode("utf-8"),
-        "heartbeat_v4_results.csv",
+        "heartbeat_v4_0_1_results.csv",
         "text/csv",
         use_container_width=True,
     )
@@ -905,7 +952,7 @@ if "results_v4" in st.session_state:
 st.markdown(
     """
     <div class="note">
-      <b>Important:</b> V4.0 ranks technical opportunity and evidence of accumulation; it does not predict outcomes or guarantee gains.
+      <b>Important:</b> V4.0.1 ranks technical opportunity and evidence of accumulation; it does not predict outcomes or guarantee gains.
       Institutional Score is an estimate built from public price-and-volume behavior, not verified real-time institutional order flow.
       Always inspect the chart, earnings date, and company-specific risks before acting.
     </div>
