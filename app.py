@@ -49,8 +49,8 @@ st.markdown(
 st.markdown(
     """
     <div class="hero">
-      <h1>📈 Troy's Heartbeat Stock Screener V4.1</h1>
-      <p>Opportunity intelligence, institutional accumulation, AI leadership, Smart Money Radar, and an under-$20 Hidden Gem Scanner with scheduled catalyst tracking.</p>
+      <h1>📈 Alpha Capital V5</h1>
+      <p>Business-first stock research: company quality, debt quality, future growth, accumulation, breakout timing, pullbacks, and hidden gems.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -272,7 +272,7 @@ def relative_return(stock: pd.Series, benchmark: pd.Series, days: int = 63) -> f
     return float((s.iloc[-1] / s.iloc[-1-days] - 1) - (b.iloc[-1] / b.iloc[-1-days] - 1)) * 100
 
 
-def score_institutional(
+def score_accumulation(
     price: float,
     ma50: float,
     ma150: float,
@@ -323,7 +323,7 @@ def score_opportunity(
     max_base_range: float,
     atr_compression: float,
     sector_strength: float,
-    institutional_score: float,
+    accumulation_score: float,
 ) -> float:
     score = 0.0
 
@@ -370,7 +370,7 @@ def score_opportunity(
     score += max(0.0, min(sector_strength, 100.0)) * 0.05
 
     # Institutional activity: 10 points
-    score += institutional_score * 0.10
+    score += accumulation_score * 0.10
 
     return round(min(score, 100), 1)
 
@@ -465,7 +465,7 @@ def technical_row(
     rs_spy = relative_return(c, spy["Close"].astype(float), 63) if not spy.empty else np.nan
     rs_nvda = relative_return(c, nvda["Close"].astype(float), 63) if not nvda.empty and ticker != "NVDA" else 0.0
 
-    institutional_score = score_institutional(
+    accumulation_score = score_accumulation(
         price, ma50_now, ma150_now, ma200_now,
         ma50_slope, ma150_slope, ma200_slope,
         cmf, obv_change, ad_change, up_down_volume_ratio,
@@ -525,7 +525,7 @@ def technical_row(
         "Setup": setup,
         "Quality Score": round(quality_score, 1),
         "Readiness Score": round(readiness_score, 1),
-        "Institutional Score": institutional_score,
+        "Accumulation Score": accumulation_score,
         "Opportunity Score": np.nan,  # Filled after sector strength is calculated.
         "Price": price,
         "Previous Close": prior_close,
@@ -580,7 +580,7 @@ def hidden_gem_score(row: pd.Series) -> float:
     """Rank under-$20 candidates without pretending a catalyst guarantees gains."""
     score = 0.0
     score += min(float(row.get("Opportunity Score", 0)), 100) * 0.25
-    score += min(float(row.get("Institutional Score", 0)), 100) * 0.20
+    score += min(float(row.get("Accumulation Score", 0)), 100) * 0.20
 
     rev = row.get("Revenue Growth %", np.nan)
     score += 15 if pd.notna(rev) and rev >= 25 else 12 if pd.notna(rev) and rev >= 10 else 7 if pd.notna(rev) and rev > 0 else 0
@@ -602,84 +602,245 @@ def hidden_gem_score(row: pd.Series) -> float:
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def fundamentals(ticker: str) -> dict:
-    try:
-        info = yf.Ticker(ticker).info or {}
-        price = info.get("currentPrice") or info.get("regularMarketPrice")
-        target = info.get("targetMeanPrice")
-        revenue_growth = info.get("revenueGrowth")
-        earnings_growth = info.get("earningsGrowth")
-        gross_margin = info.get("grossMargins")
-        op_margin = info.get("operatingMargins")
-        fcf = info.get("freeCashflow")
-        revenue = info.get("totalRevenue")
-        total_cash = info.get("totalCash")
-        total_debt = info.get("totalDebt")
-        short_float = info.get("shortPercentOfFloat")
-        sector = info.get("sector")
-        industry = info.get("industry")
-        fcf_margin = fcf / revenue if fcf is not None and revenue not in (None, 0) else None
-        target_upside = target / price - 1 if target and price else None
+    """Business-first research model. Debt is judged by affordability and purpose,
+    not by the headline balance alone. Analyst targets are displayed but do not
+    drive the Alpha Business Score.
+    """
+    def val(info: dict, key: str):
+        x = info.get(key)
+        try:
+            return float(x) if x is not None and np.isfinite(float(x)) else np.nan
+        except Exception:
+            return np.nan
 
-        score = 0
-        if revenue_growth is not None:
-            score += 7 if revenue_growth >= .20 else 5 if revenue_growth >= .10 else 3 if revenue_growth > 0 else 0
-        if earnings_growth is not None:
-            score += 6 if earnings_growth >= .20 else 4 if earnings_growth >= .10 else 2 if earnings_growth > 0 else 0
-        if gross_margin is not None:
-            score += 4 if gross_margin >= .50 else 3 if gross_margin >= .30 else 1
-        if fcf_margin is not None:
-            score += 5 if fcf_margin >= .15 else 3 if fcf_margin >= .05 else 1 if fcf_margin > 0 else 0
-        inst = info.get("heldPercentInstitutions")
-        if inst is not None:
-            score += 3 if inst >= .70 else 2 if inst >= .50 else 1
-        if target_upside is not None:
-            score += 3 if target_upside >= .15 else 2 if target_upside > 0 else 0
-        pe = info.get("forwardPE")
+    def pts(x, rules, missing=0.0):
+        if pd.isna(x):
+            return missing
+        for threshold, score in rules:
+            if x >= threshold:
+                return score
+        return 0.0
+
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info or {}
+
+        price = val(info, "currentPrice")
+        if pd.isna(price):
+            price = val(info, "regularMarketPrice")
+        target = val(info, "targetMeanPrice")
+        revenue_growth = val(info, "revenueGrowth")
+        earnings_growth = val(info, "earningsGrowth")
+        gross_margin = val(info, "grossMargins")
+        op_margin = val(info, "operatingMargins")
+        profit_margin = val(info, "profitMargins")
+        fcf = val(info, "freeCashflow")
+        operating_cf = val(info, "operatingCashflow")
+        revenue = val(info, "totalRevenue")
+        cash = val(info, "totalCash")
+        debt = val(info, "totalDebt")
+        ebitda = val(info, "ebitda")
+        current_ratio = val(info, "currentRatio")
+        quick_ratio = val(info, "quickRatio")
+        roe = val(info, "returnOnEquity")
+        roa = val(info, "returnOnAssets")
+        forward_pe = val(info, "forwardPE")
+        peg = val(info, "pegRatio")
+        ev_ebitda = val(info, "enterpriseToEbitda")
+        market_cap = val(info, "marketCap")
+        shares = val(info, "sharesOutstanding")
+        float_shares = val(info, "floatShares")
+        inst = val(info, "heldPercentInstitutions")
+        insider = val(info, "heldPercentInsiders")
+        short_float = val(info, "shortPercentOfFloat")
+
+        fcf_margin = fcf / revenue if pd.notna(fcf) and pd.notna(revenue) and revenue != 0 else np.nan
+        debt_to_ebitda = debt / ebitda if pd.notna(debt) and pd.notna(ebitda) and ebitda > 0 else np.nan
+        net_debt = debt - cash if pd.notna(debt) and pd.notna(cash) else np.nan
+        debt_to_fcf = debt / fcf if pd.notna(debt) and pd.notna(fcf) and fcf > 0 else np.nan
+        cash_to_debt = cash / debt if pd.notna(cash) and pd.notna(debt) and debt > 0 else np.nan
+        implied_capex = operating_cf - fcf if pd.notna(operating_cf) and pd.notna(fcf) else np.nan
+        capex_to_revenue = implied_capex / revenue if pd.notna(implied_capex) and pd.notna(revenue) and revenue > 0 else np.nan
+        target_upside = target / price - 1 if pd.notna(target) and pd.notna(price) and price > 0 else np.nan
+
+        # 1) Business Quality — 25 points
+        business_quality = 0.0
+        business_quality += pts(revenue_growth, [(0.25, 6), (0.15, 5), (0.08, 4), (0.03, 2), (0.0, 1)])
+        business_quality += pts(earnings_growth, [(0.25, 5), (0.15, 4), (0.08, 3), (0.0, 1)])
+        business_quality += pts(fcf_margin, [(0.25, 5), (0.15, 4), (0.08, 3), (0.0, 1)])
+        business_quality += pts(op_margin, [(0.30, 4), (0.20, 3), (0.10, 2), (0.0, 1)])
+        business_quality += pts(roe, [(0.30, 3), (0.20, 2.5), (0.12, 1.5), (0.0, .5)])
+        business_quality += pts(roa, [(0.15, 2), (0.08, 1.5), (0.03, .75), (0.0, .25)])
+
+        # 2) Financial Strength — 20 points. High debt is acceptable when cash
+        # generation, EBITDA and liquidity comfortably support it.
+        financial_strength = 0.0
+        if pd.notna(debt_to_ebitda):
+            financial_strength += 7 if debt_to_ebitda <= 1 else 6 if debt_to_ebitda <= 2 else 4.5 if debt_to_ebitda <= 3 else 2.5 if debt_to_ebitda <= 4.5 else 0.5
+        elif pd.notna(cash_to_debt):
+            financial_strength += 7 if cash_to_debt >= 1 else 5 if cash_to_debt >= .5 else 2
+        if pd.notna(debt_to_fcf):
+            financial_strength += 5 if debt_to_fcf <= 2 else 4 if debt_to_fcf <= 4 else 2.5 if debt_to_fcf <= 7 else .5
+        elif pd.notna(fcf) and fcf > 0:
+            financial_strength += 2
+        financial_strength += pts(current_ratio, [(2.0, 4), (1.5, 3.5), (1.0, 2.5), (.75, 1)])
+        financial_strength += pts(fcf_margin, [(.20, 4), (.10, 3), (.03, 2), (0.0, 1)])
+
+        # 3) Capital Allocation — 15 points. Reward productive reinvestment;
+        # penalize weak returns, dilution and spending without growth.
+        capital_allocation = 0.0
+        capital_allocation += pts(roe, [(.30, 4), (.20, 3), (.12, 2), (0.0, .5)])
+        capital_allocation += pts(roa, [(.15, 3), (.08, 2), (.03, 1), (0.0, .25)])
+        if pd.notna(implied_capex) and implied_capex > 0:
+            growth_investment = (pd.notna(revenue_growth) and revenue_growth >= .08 and pd.notna(op_margin) and op_margin > 0)
+            capital_allocation += 4 if growth_investment else 2 if pd.notna(fcf) and fcf > 0 else 0
+        elif pd.notna(fcf) and fcf > 0:
+            capital_allocation += 3
+        dilution_ratio = shares / float_shares if pd.notna(shares) and pd.notna(float_shares) and float_shares > 0 else np.nan
+        capital_allocation += 2 if pd.isna(dilution_ratio) or dilution_ratio <= 1.08 else 1 if dilution_ratio <= 1.18 else 0
+        capital_allocation += 2 if pd.notna(fcf) and fcf > 0 else 0
+
+        # 4) Future Growth — 20 points. Mostly operating evidence; Wall Street's
+        # price target is intentionally excluded.
+        future_growth = 0.0
+        future_growth += pts(revenue_growth, [(.30, 8), (.20, 7), (.12, 5.5), (.07, 4), (.02, 2), (0.0, 1)])
+        future_growth += pts(earnings_growth, [(.30, 7), (.20, 6), (.12, 4.5), (.05, 3), (0.0, 1)])
+        future_growth += pts(gross_margin, [(.70, 3), (.50, 2.5), (.30, 1.5), (.15, .75)])
+        future_growth += 2 if pd.notna(implied_capex) and implied_capex > 0 and pd.notna(revenue_growth) and revenue_growth > .08 else 0
+
+        # 5) Competitive Advantage — 10 points (measurable moat proxies).
+        competitive_advantage = 0.0
+        competitive_advantage += pts(gross_margin, [(.70, 3), (.50, 2.5), (.35, 2), (.20, 1)])
+        competitive_advantage += pts(op_margin, [(.35, 2.5), (.25, 2), (.15, 1.5), (.05, .75)])
+        competitive_advantage += pts(roe, [(.35, 2.5), (.25, 2), (.15, 1), (0.0, .25)])
+        competitive_advantage += pts(fcf_margin, [(.25, 2), (.15, 1.5), (.08, 1), (0.0, .25)])
+
+        # 6) Valuation — 10 points. Cheap relative to growth, not merely low P/E.
+        valuation = 0.0
+        if pd.notna(peg) and peg > 0:
+            valuation += 5 if peg <= 1 else 4 if peg <= 1.5 else 2.5 if peg <= 2.2 else 1
+        elif pd.notna(forward_pe):
+            valuation += 4 if 0 < forward_pe <= 18 else 3 if forward_pe <= 28 else 1.5 if forward_pe <= 40 else .5
+        if pd.notna(ev_ebitda):
+            valuation += 3 if 0 < ev_ebitda <= 12 else 2 if ev_ebitda <= 20 else 1 if ev_ebitda <= 30 else 0
+        if pd.notna(market_cap) and market_cap > 0 and pd.notna(fcf):
+            fcf_yield = fcf / market_cap
+            valuation += 2 if fcf_yield >= .06 else 1.5 if fcf_yield >= .035 else .75 if fcf_yield > 0 else 0
+        else:
+            fcf_yield = np.nan
+
+        alpha_business = business_quality + financial_strength + capital_allocation + future_growth + competitive_advantage + valuation
+        alpha_business = round(float(np.clip(alpha_business, 0, 100)), 1)
+
+        moat_score = round(float(np.clip(competitive_advantage * 7 + business_quality * 1.2, 0, 100)), 1)
+        management_score = round(float(np.clip(capital_allocation * 5 + business_quality, 0, 100)), 1)
+
+        growth_investment_flag = bool(
+            pd.notna(implied_capex) and implied_capex > 0
+            and pd.notna(revenue_growth) and revenue_growth >= .08
+            and pd.notna(op_margin) and op_margin > 0
+        )
+        debt_quality = (
+            "🟢 Well supported" if (pd.notna(debt_to_ebitda) and debt_to_ebitda <= 3 and pd.notna(fcf) and fcf > 0)
+            else "🟡 Manageable / monitor" if (pd.notna(debt_to_ebitda) and debt_to_ebitda <= 4.5 and pd.notna(fcf) and fcf > 0)
+            else "🔴 Elevated risk" if pd.notna(debt) and debt > 0
+            else "⚪ Limited data"
+        )
+        rating = "★★★★★ Elite" if alpha_business >= 90 else "★★★★ Strong" if alpha_business >= 80 else "★★★ Above Average" if alpha_business >= 70 else "★★ Developing" if alpha_business >= 55 else "★ Speculative"
+
+        strengths = []
+        if pd.notna(revenue_growth) and revenue_growth >= .15: strengths.append("rapid revenue growth")
+        if pd.notna(fcf_margin) and fcf_margin >= .15: strengths.append("strong free-cash-flow margins")
+        if pd.notna(gross_margin) and gross_margin >= .50: strengths.append("high gross margins")
+        if growth_investment_flag: strengths.append("productive growth investment")
+        if debt_quality == "🟢 Well supported": strengths.append("well-supported debt")
+        if not strengths: strengths.append("balanced operating profile")
+        thesis = f"{info.get('shortName', ticker)} shows " + ", ".join(strengths[:3]) + "."
+
+        risks = []
+        if pd.notna(debt_to_ebitda) and debt_to_ebitda > 4.5: risks.append("high leverage relative to EBITDA")
+        if pd.notna(fcf) and fcf < 0: risks.append("negative free cash flow")
+        if pd.notna(revenue_growth) and revenue_growth < 0: risks.append("declining revenue")
+        if pd.notna(forward_pe) and forward_pe > 40: risks.append("premium valuation")
+        if pd.notna(op_margin) and op_margin < 0: risks.append("negative operating margin")
+        if growth_investment_flag and pd.notna(fcf_margin) and fcf_margin < .05: risks.append("investment cycle is pressuring near-term free cash flow")
+        risk_text = "; ".join(risks[:3]) if risks else "No major quantitative warning identified; review company-specific execution risks."
 
         next_earnings = pd.NaT
         try:
-            cal = yf.Ticker(ticker).calendar
+            cal = stock.calendar
             if isinstance(cal, dict):
                 raw_date = cal.get("Earnings Date")
                 if isinstance(raw_date, (list, tuple)) and raw_date:
                     next_earnings = pd.Timestamp(raw_date[0])
                 elif raw_date is not None:
                     next_earnings = pd.Timestamp(raw_date)
-            elif isinstance(cal, pd.DataFrame) and not cal.empty:
-                if "Earnings Date" in cal.index:
-                    next_earnings = pd.Timestamp(cal.loc["Earnings Date"].iloc[0])
+            elif isinstance(cal, pd.DataFrame) and not cal.empty and "Earnings Date" in cal.index:
+                next_earnings = pd.Timestamp(cal.loc["Earnings Date"].iloc[0])
         except Exception:
             pass
         days_to_earnings = safe_days_to_date(next_earnings) if pd.notna(next_earnings) else np.nan
 
-        if pe is not None:
-            score += 2 if 0 < pe <= 25 else 1 if 25 < pe <= 40 else 0
-
         return {
-            "Revenue Growth %": revenue_growth * 100 if revenue_growth is not None else np.nan,
-            "EPS Growth %": earnings_growth * 100 if earnings_growth is not None else np.nan,
-            "Gross Margin %": gross_margin * 100 if gross_margin is not None else np.nan,
-            "Operating Margin %": op_margin * 100 if op_margin is not None else np.nan,
-            "FCF Margin %": fcf_margin * 100 if fcf_margin is not None else np.nan,
-            "Institutional Ownership %": inst * 100 if inst is not None else np.nan,
-            "Insider Ownership %": (info.get("heldPercentInsiders") or np.nan) * 100,
-            "Forward P/E": pe,
-            "Analyst Target Upside %": target_upside * 100 if target_upside is not None else np.nan,
-            "Market Cap": info.get("marketCap"),
+            "Company": info.get("shortName", ticker),
+            "Alpha Business Score": alpha_business,
+            "Alpha Rating": rating,
+            "Business Quality": round(business_quality, 1),
+            "Financial Strength": round(financial_strength, 1),
+            "Capital Allocation": round(capital_allocation, 1),
+            "Future Growth": round(future_growth, 1),
+            "Competitive Advantage": round(competitive_advantage, 1),
+            "Valuation Score": round(valuation, 1),
+            "Moat Score": moat_score,
+            "Management Score": management_score,
+            "Debt Quality": debt_quality,
+            "Growth Investment": growth_investment_flag,
+            "Alpha Thesis": thesis,
+            "Alpha Risks": risk_text,
+            "Revenue Growth %": revenue_growth * 100 if pd.notna(revenue_growth) else np.nan,
+            "EPS Growth %": earnings_growth * 100 if pd.notna(earnings_growth) else np.nan,
+            "Gross Margin %": gross_margin * 100 if pd.notna(gross_margin) else np.nan,
+            "Operating Margin %": op_margin * 100 if pd.notna(op_margin) else np.nan,
+            "Profit Margin %": profit_margin * 100 if pd.notna(profit_margin) else np.nan,
+            "FCF Margin %": fcf_margin * 100 if pd.notna(fcf_margin) else np.nan,
+            "ROE %": roe * 100 if pd.notna(roe) else np.nan,
+            "ROA %": roa * 100 if pd.notna(roa) else np.nan,
+            "Current Ratio": current_ratio,
+            "Debt / EBITDA": debt_to_ebitda,
+            "Debt / FCF": debt_to_fcf,
+            "Cash / Debt": cash_to_debt,
+            "Net Debt": net_debt,
+            "Implied Capex": implied_capex,
+            "Capex / Revenue %": capex_to_revenue * 100 if pd.notna(capex_to_revenue) else np.nan,
+            "FCF Yield %": fcf_yield * 100 if pd.notna(fcf_yield) else np.nan,
+            "Institutional Ownership %": inst * 100 if pd.notna(inst) else np.nan,
+            "Insider Ownership %": insider * 100 if pd.notna(insider) else np.nan,
+            "Forward P/E": forward_pe,
+            "PEG": peg,
+            "EV / EBITDA": ev_ebitda,
+            "Analyst Target Upside %": target_upside * 100 if pd.notna(target_upside) else np.nan,
+            "Market Cap": market_cap,
             "Free Cash Flow": fcf,
-            "Total Cash": total_cash,
-            "Total Debt": total_debt,
-            "Short Float %": short_float * 100 if short_float is not None else np.nan,
-            "Sector": sector or "",
-            "Industry": industry or "",
+            "Operating Cash Flow": operating_cf,
+            "Total Cash": cash,
+            "Total Debt": debt,
+            "Short Float %": short_float * 100 if pd.notna(short_float) else np.nan,
+            "Sector": info.get("sector") or "",
+            "Industry": info.get("industry") or "",
             "Next Earnings": next_earnings,
             "Days to Earnings": days_to_earnings,
             "Catalyst": "Scheduled earnings" if pd.notna(days_to_earnings) and 0 <= days_to_earnings <= 60 else "No scheduled event found",
-            "Fundamental Score": score,
+            "Fundamental Score": alpha_business,
         }
     except Exception:
-        return {"Fundamental Score": 0}
-
+        return {
+            "Company": ticker,
+            "Alpha Business Score": 0.0,
+            "Alpha Rating": "Data unavailable",
+            "Alpha Thesis": "Fundamental data was unavailable.",
+            "Alpha Risks": "Score could not be calculated.",
+            "Fundamental Score": 0.0,
+        }
 
 def build_heatmap(results: pd.DataFrame) -> pd.DataFrame:
     rows = []
@@ -689,7 +850,7 @@ def build_heatmap(results: pd.DataFrame) -> pd.DataFrame:
         if subset.empty:
             continue
         strength = (
-            subset["Institutional Score"].mean() * 0.45
+            subset["Accumulation Score"].mean() * 0.45
             + subset["Quality Score"].mean() * 0.30
             + subset["Readiness Score"].mean() * 0.15
             + subset["RS vs SPY 3M %"].clip(-20, 30).fillna(0).mean() * 0.35
@@ -700,7 +861,7 @@ def build_heatmap(results: pd.DataFrame) -> pd.DataFrame:
             "AI Group": group,
             "State": state,
             "Group Strength": round(strength, 1),
-            "Average Institutional": round(subset["Institutional Score"].mean(), 1),
+            "Average Institutional": round(subset["Accumulation Score"].mean(), 1),
             "Average Opportunity": round(subset["Opportunity Score"].mean(), 1),
             "Average RS vs SPY": round(subset["RS vs SPY 3M %"].mean(), 1),
             "Stocks": len(subset),
@@ -727,7 +888,8 @@ with st.expander("⚙️ Screener settings", expanded=False):
     )
     include_fund = st.checkbox(
         "Include fundamentals and analyst data for every stock (slower)",
-        value=False,
+        value=True,
+        help="Required for Alpha Business Rankings. Turn off only for a fast technical-only scan.",
     )
     auto_hidden_fund = st.checkbox(
         "Automatically research under-$20 hidden-gem candidates",
@@ -757,7 +919,7 @@ tickers = [clean_ticker(t) for t in custom.split(",") if t.strip()] if custom.st
 session_fraction, session_label = market_elapsed_fraction()
 st.caption(f"⏱️ {session_label}. Selected universe: {len(tickers)} stocks. Intraday volume pace adjusts today's volume for time elapsed.")
 
-if st.button("🔍 Run V4.1 intelligence scan", type="primary", use_container_width=True):
+if st.button("🔍 Run Alpha Capital V5 scan", type="primary", use_container_width=True):
     with st.spinner(f"Scanning {len(tickers)} stocks…"):
         benchmarks = download_prices(("SPY", "NVDA"))
         spy = frame_for(benchmarks, "SPY", 2)
@@ -790,7 +952,7 @@ if st.button("🔍 Run V4.1 intelligence scan", type="primary", use_container_wi
             subset = results[results["Ticker"].isin(members)]
             if not subset.empty:
                 preliminary_heat[group] = float(np.clip(
-                    subset["Institutional Score"].mean() * 0.5
+                    subset["Accumulation Score"].mean() * 0.5
                     + subset["Quality Score"].mean() * 0.3
                     + subset["Readiness Score"].mean() * 0.2,
                     0, 100,
@@ -813,7 +975,7 @@ if st.button("🔍 Run V4.1 intelligence scan", type="primary", use_container_wi
                 max_base_range=params.max_base_range,
                 atr_compression=row["ATR Compression"],
                 sector_strength=sector_strength,
-                institutional_score=row["Institutional Score"],
+                accumulation_score=row["Accumulation Score"],
             ))
         results["Opportunity Score"] = opportunity_scores
 
@@ -827,7 +989,7 @@ if st.button("🔍 Run V4.1 intelligence scan", type="primary", use_container_wi
         # current accumulation. Keep its influence intentionally modest.
         if "Institutional Ownership %" in results.columns:
             ownership_bonus = results["Institutional Ownership %"].fillna(0).clip(0, 90) / 30
-            results["Institutional Score"] = np.minimum(100, results["Institutional Score"] + ownership_bonus).round(1)
+            results["Accumulation Score"] = np.minimum(100, results["Accumulation Score"] + ownership_bonus).round(1)
 
         results["Hidden Gem Score"] = np.nan
         hidden_mask = (
@@ -839,319 +1001,148 @@ if st.button("🔍 Run V4.1 intelligence scan", type="primary", use_container_wi
             results.loc[hidden_mask, "Hidden Gem Score"] = results.loc[hidden_mask].apply(hidden_gem_score, axis=1)
 
         results = results.sort_values(
-            ["Opportunity Score", "Institutional Score", "Readiness Score"],
+            ["Alpha Business Score", "Accumulation Score", "Readiness Score"],
             ascending=[False, False, False],
+            na_position="last",
         )
-        st.session_state["results_v4"] = results
-        st.session_state["heatmap_v4"] = build_heatmap(results)
+        st.session_state["results_v5"] = results
+        st.session_state["heatmap_v5"] = build_heatmap(results)
 
-if "results_v4" in st.session_state:
-    results = st.session_state["results_v4"]
-    heatmap = st.session_state.get("heatmap_v4", pd.DataFrame())
+if "results_v5" in st.session_state:
+    results = st.session_state["results_v5"].copy()
 
-    st.subheader("🧠 V4.0.1 Intelligence Dashboard")
-    top_opportunity = results.iloc[0]
-    top_institutional = results.sort_values("Institutional Score", ascending=False).iloc[0]
-    strongest_group = heatmap.iloc[0] if not heatmap.empty else None
-    best_pullback = results[results["AI 200D Pullback Watch"]].sort_values("Opportunity Score", ascending=False)
-    best_pullback_ticker = best_pullback.iloc[0]["Ticker"] if not best_pullback.empty else "None"
+    # Ensure business rankings are business-first, while technical timing stays separate.
+    if "Alpha Business Score" not in results.columns:
+        results["Alpha Business Score"] = 0.0
+    if "Accumulation Score" not in results.columns:
+        results["Accumulation Score"] = 0.0
 
-    d1, d2, d3, d4, d5 = st.columns(5)
-    d1.metric("Stocks analyzed", len(results))
-    d2.metric("Top opportunity", f"{top_opportunity['Ticker']} · {top_opportunity['Opportunity Score']:.0f}")
-    d3.metric("Top institutional", f"{top_institutional['Ticker']} · {top_institutional['Institutional Score']:.0f}")
-    d4.metric("Strongest AI group", strongest_group["AI Group"] if strongest_group is not None else "N/A")
-    d5.metric("Best 200D pullback", best_pullback_ticker)
+    st.subheader("🏆 Alpha Business Rankings")
+    st.caption("Ranks the strongest businesses first. Debt is graded by affordability and cash generation—not by the headline debt balance. Analyst targets are shown for context but do not drive the business score.")
 
-    st.subheader("🔥 AI leadership heatmap")
-    if heatmap.empty:
-        st.info("The selected universe did not contain enough AI-group stocks to build a heatmap.")
+    ranked = results.sort_values(
+        ["Alpha Business Score", "Business Quality", "Future Growth", "Financial Strength"],
+        ascending=False,
+        na_position="last",
+    ).head(20)
+
+    if ranked["Alpha Business Score"].max() <= 0:
+        st.warning("Fundamental data was not included. Turn on ‘Include fundamentals’ and run the scan again to build Alpha Business Rankings.")
     else:
-        st.dataframe(
-            heatmap,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Group Strength": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Average Institutional": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Average Opportunity": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Average RS vs SPY": st.column_config.NumberColumn(format="%.1f%%"),
-            },
-        )
+        top = ranked.iloc[0]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Top business", top["Ticker"])
+        m2.metric("Alpha Business Score", f"{top['Alpha Business Score']:.1f}")
+        m3.metric("Debt quality", str(top.get("Debt Quality", "N/A")))
+        m4.metric("Accumulation", f"{top.get('Accumulation Score', 0):.1f}")
 
-    st.subheader("📉 Biggest AI semiconductor pullbacks today")
-    semi_pullbacks = results[
-        results["Ticker"].isin(AI_SEMI_PULLBACK_TICKERS)
-        & results["Day Change %"].notna()
-        & (results["Day Change %"] < 0)
-    ].sort_values("Day Change %", ascending=True).head(15).copy()
-
-    if semi_pullbacks.empty:
-        st.info("No scanned AI semiconductor companies are currently down on the day.")
-    else:
+        business_cols = [
+            "Ticker","Company","Alpha Business Score","Alpha Rating","Price","Debt Quality","Growth Investment",
+            "Business Quality","Financial Strength","Capital Allocation","Future Growth","Competitive Advantage",
+            "Valuation Score","Moat Score","Management Score","Revenue Growth %","FCF Margin %","Debt / EBITDA",
+            "FCF Yield %","Accumulation Score","TradingView"
+        ]
+        business_cols = [c for c in business_cols if c in ranked.columns]
         st.dataframe(
-            semi_pullbacks[[
-                "Ticker","AI Groups","Price","Day Change %","Day Change $",
-                "Intraday Volume Pace","Opportunity Score","Institutional Score",
-                "Distance From 200D MA %","TradingView"
-            ]],
-            use_container_width=True,
-            hide_index=True,
+            ranked[business_cols], use_container_width=True, hide_index=True,
             column_config={
+                "Alpha Business Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Business Quality": st.column_config.NumberColumn(format="%.1f / 25"),
+                "Financial Strength": st.column_config.NumberColumn(format="%.1f / 20"),
+                "Capital Allocation": st.column_config.NumberColumn(format="%.1f / 15"),
+                "Future Growth": st.column_config.NumberColumn(format="%.1f / 20"),
+                "Competitive Advantage": st.column_config.NumberColumn(format="%.1f / 10"),
+                "Valuation Score": st.column_config.NumberColumn(format="%.1f / 10"),
+                "Moat Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Management Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Accumulation Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
                 "Price": st.column_config.NumberColumn(format="$%.2f"),
-                "Day Change %": st.column_config.NumberColumn("Today's pullback", format="%.2f%%"),
-                "Day Change $": st.column_config.NumberColumn("Dollar move", format="$%.2f"),
-                "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
-                "Opportunity Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Institutional Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Distance From 200D MA %": st.column_config.NumberColumn("From 200D MA", format="%.2f%%"),
+                "Revenue Growth %": st.column_config.NumberColumn(format="%.2f%%"),
+                "FCF Margin %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Debt / EBITDA": st.column_config.NumberColumn(format="%.2fx"),
+                "FCF Yield %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Growth Investment": st.column_config.CheckboxColumn("Growth investment"),
                 "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
-            },
+            }
         )
-    st.caption("This ranks the largest same-day percentage declines among AI chips, memory/storage, and semiconductor-equipment companies. A large one-day drop can be a buying opportunity or a warning; confirm the news, earnings context, volume, and technical support before acting.")
 
-    st.subheader("💎 Hidden Gem Scanner — under $20")
-    hidden = results[
-        results["Ticker"].isin(HIDDEN_GEM_TICKERS)
-        & results["Price"].between(1, 20, inclusive="both")
-    ].copy()
-    if "Market Cap" in hidden.columns:
-        hidden = hidden[(hidden["Market Cap"].isna()) | hidden["Market Cap"].between(50_000_000, 15_000_000_000, inclusive="both")]
-    hidden = hidden.sort_values(["Hidden Gem Score", "Opportunity Score", "Institutional Score"], ascending=False).head(20)
-    if hidden.empty:
-        st.info("No researched under-$20 candidates passed the current liquidity and technical filters. Select the V4.1 or Hidden Gems universe and run the scan again.")
-    else:
-        hidden_cols = [c for c in [
-            "Ticker","Hidden Gem Groups","Price","Hidden Gem Score","Opportunity Score","Institutional Score",
-            "Revenue Growth %","FCF Margin %","Free Cash Flow","Market Cap","Analyst Target Upside %",
-            "Catalyst","Days to Earnings","Intraday Volume Pace","Distance to Breakout %","TradingView"
-        ] if c in hidden.columns]
-        hidden_display = hidden[hidden_cols].copy()
-        st.dataframe(
-            hidden_display, use_container_width=True, hide_index=True,
-            column_config={
-                "Price": st.column_config.NumberColumn(format="$%.2f"),
-                "Hidden Gem Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Opportunity Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Institutional Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Revenue Growth %": st.column_config.NumberColumn(format="%.1f%%"),
-                "FCF Margin %": st.column_config.NumberColumn(format="%.1f%%"),
-                "Free Cash Flow": st.column_config.NumberColumn(format="$%.0f"),
-                "Market Cap": st.column_config.NumberColumn(format="$%.0f"),
-                "Analyst Target Upside %": st.column_config.NumberColumn(format="%.1f%%"),
-                "Days to Earnings": st.column_config.NumberColumn(format="%.0f days"),
-                "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
-                "Distance to Breakout %": st.column_config.NumberColumn("To breakout", format="%.2f%%"),
-                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
-            },
-        )
-        st.caption("Hidden Gem Score rewards improving fundamentals, positive free cash flow, accumulation, technical opportunity, liquidity, and a verifiable scheduled earnings catalyst. It does not estimate the probability that the catalyst outcome will be positive.")
+        selected = st.selectbox("Open a company investment-committee view", ranked["Ticker"].tolist())
+        detail = ranked[ranked["Ticker"] == selected].iloc[0]
+        st.markdown(f"### {detail.get('Company', selected)} ({selected})")
+        st.markdown(f"**{detail.get('Alpha Rating', '')} · Alpha Business Score: {detail.get('Alpha Business Score', 0):.1f}/100**")
+        st.markdown(f"**Investment thesis:** {detail.get('Alpha Thesis', 'Not available')}")
+        st.markdown(f"**Watch items:** {detail.get('Alpha Risks', 'Not available')}")
+        st.markdown(f"**Debt assessment:** {detail.get('Debt Quality', 'N/A')} — Debt/EBITDA: {detail.get('Debt / EBITDA', np.nan):.2f}x | Cash/Debt: {detail.get('Cash / Debt', np.nan):.2f}x")
 
-    st.subheader("🦅 Smart Money Radar")
-    smart = results[
-        (results["Institutional Score"] >= 65)
-        & (results["CMF 20"] > 0)
-        & (results["OBV Trend 20D %"] > 0)
-    ].sort_values(["Institutional Score", "Opportunity Score"], ascending=False).head(15)
-    if smart.empty:
-        st.info("No stocks currently meet all Smart Money Radar confirmation rules.")
+    st.subheader("🚦 Breakout Watch")
+    breakout = results[results["Distance to Breakout %"].between(-5, 1, inclusive="both")].copy()
+    breakout = breakout.sort_values(["Readiness Score","Intraday Volume Pace","Distance to Breakout %"], ascending=[False,False,False]).head(15)
+    if breakout.empty:
+        st.info("No scanned stocks are within 5% below to 1% above their breakout level.")
     else:
         st.dataframe(
-            smart[["Ticker","AI Groups","Hidden Gem Groups","Institutional Score","Opportunity Score","CMF 20","OBV Trend 20D %","Up/Down Volume Ratio","RS vs SPY 3M %","Intraday Volume Pace","TradingView"]],
+            breakout[["Ticker","Price","Breakout Level","Distance to Breakout %","Intraday Volume Pace","Readiness Score","Alert Stage","Status","TradingView"]],
             use_container_width=True, hide_index=True,
             column_config={
-                "Institutional Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Opportunity Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "CMF 20": st.column_config.NumberColumn(format="%.2f"),
-                "OBV Trend 20D %": st.column_config.NumberColumn(format="%.1f%%"),
-                "Up/Down Volume Ratio": st.column_config.NumberColumn(format="%.2fx"),
-                "RS vs SPY 3M %": st.column_config.NumberColumn(format="%.1f%%"),
+                "Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Breakout Level": st.column_config.NumberColumn(format="$%.2f"),
+                "Distance to Breakout %": st.column_config.NumberColumn(format="%.2f%%"),
                 "Intraday Volume Pace": st.column_config.NumberColumn(format="%.2fx"),
+                "Readiness Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
                 "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
-            },
+            }
         )
 
-    a1, a2 = st.columns(2)
-    with a1:
-        st.subheader("🏆 Highest Opportunity Scores")
-        opp_cols = ["Ticker","AI Groups","Opportunity Score","Institutional Score","Distance to Breakout %","Intraday Volume Pace","RSI 14","Status","TradingView"]
-        st.dataframe(
-            results.head(12)[opp_cols],
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Opportunity Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Institutional Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Distance to Breakout %": st.column_config.NumberColumn("To breakout", format="%.2f%%"),
-                "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
-                "RSI 14": st.column_config.NumberColumn(format="%.1f"),
-                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
-            },
-        )
-
-    with a2:
-        st.subheader("🏦 Highest Institutional Scores")
-        inst = results.sort_values("Institutional Score", ascending=False).head(12)
-        inst_cols = ["Ticker","AI Groups","Institutional Score","CMF 20","OBV Trend 20D %","A/D Trend 20D %","Up/Down Volume Ratio","RS vs SPY 3M %","RS vs NVDA 3M %","TradingView"]
-        st.dataframe(
-            inst[inst_cols],
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Institutional Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "CMF 20": st.column_config.NumberColumn(format="%.2f"),
-                "OBV Trend 20D %": st.column_config.NumberColumn(format="%.1f%%"),
-                "A/D Trend 20D %": st.column_config.NumberColumn(format="%.1f%%"),
-                "Up/Down Volume Ratio": st.column_config.NumberColumn(format="%.2fx"),
-                "RS vs SPY 3M %": st.column_config.NumberColumn(format="%.1f%%"),
-                "RS vs NVDA 3M %": st.column_config.NumberColumn(format="%.1f%%"),
-                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
-            },
-        )
-
-    st.subheader("🚦 Closest to trigger")
-    closest = results[results["Distance to Breakout %"].between(-5, 1, inclusive="both")].sort_values(
-        ["Alert Ready", "Distance to Breakout %", "Intraday Volume Pace"],
-        ascending=[False, False, False],
-    ).head(10)
-    if closest.empty:
-        st.info("No stocks are currently within 5% of their breakout level.")
+    st.subheader("🧲 Major Pullbacks")
+    pullbacks = results.copy()
+    pullbacks["Pullback Rank"] = (
+        pullbacks["Day Change %"].fillna(0).clip(upper=0).abs() * .25
+        + pullbacks["Distance From 200D MA %"].fillna(0).clip(upper=0).abs() * .20
+        + pullbacks["Alpha Business Score"].fillna(0) * .45
+        + pullbacks["Accumulation Score"].fillna(0) * .10
+    )
+    pullbacks = pullbacks[(pullbacks["Day Change %"] < 0) | (pullbacks["Distance From 200D MA %"].between(-8, 8))]
+    pullbacks = pullbacks.sort_values("Pullback Rank", ascending=False).head(15)
+    if pullbacks.empty:
+        st.info("No qualifying pullbacks were found.")
     else:
         st.dataframe(
-            closest[["Ticker","Alert Stage","Status","Distance to Breakout %","Intraday Volume Pace","Readiness Score","Opportunity Score","TradingView"]],
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Distance to Breakout %": st.column_config.NumberColumn("To breakout", format="%.2f%%"),
-                "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
-                "Readiness Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Opportunity Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
-            },
-        )
-
-    st.subheader("⚡ Unusual-volume watch")
-    unusual = results[results["Intraday Volume Pace"] >= volume_ratio].sort_values(
-        ["Intraday Volume Pace", "Opportunity Score"], ascending=[False, False]
-    ).head(12)
-    if unusual.empty:
-        st.info(f"No stocks currently have conservative volume pace of {volume_ratio:.1f}× or higher.")
-    else:
-        st.dataframe(
-            unusual[["Ticker","Intraday Volume Pace","Distance to Breakout %","Opportunity Score","Institutional Score","Status","TradingView"]],
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
-                "Distance to Breakout %": st.column_config.NumberColumn("To breakout", format="%.2f%%"),
-                "Opportunity Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Institutional Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
-            },
-        )
-
-    st.subheader("🧲 AI pullbacks near the 200-day moving average")
-    ai200 = results[results["AI 200D Pullback Watch"]].copy()
-    ai200["Absolute 200D Distance"] = ai200["Distance From 200D MA %"].abs()
-    ai200 = ai200.sort_values(["Opportunity Score", "Absolute 200D Distance"], ascending=[False, True]).head(15)
-    if ai200.empty:
-        st.info("No scanned AI stocks are currently within 6% above or 3% below a stable/rising 200-day moving average.")
-    else:
-        st.dataframe(
-            ai200[["Ticker","AI Groups","Price","200D MA","Distance From 200D MA %","200D MA Slope %","Opportunity Score","Institutional Score","Intraday Volume Pace","TradingView"]],
-            use_container_width=True,
-            hide_index=True,
+            pullbacks[["Ticker","Price","Day Change %","Distance From 200D MA %","RSI 14","Alpha Business Score","Accumulation Score","Debt Quality","TradingView"]],
+            use_container_width=True, hide_index=True,
             column_config={
                 "Price": st.column_config.NumberColumn(format="$%.2f"),
-                "200D MA": st.column_config.NumberColumn(format="$%.2f"),
-                "Distance From 200D MA %": st.column_config.NumberColumn("From 200D MA", format="%.2f%%"),
-                "200D MA Slope %": st.column_config.NumberColumn("200D slope", format="%.2f%%"),
-                "Opportunity Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Institutional Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-                "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
+                "Day Change %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Distance From 200D MA %": st.column_config.NumberColumn(format="%.2f%%"),
+                "RSI 14": st.column_config.NumberColumn(format="%.1f"),
+                "Alpha Business Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Accumulation Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
                 "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
-            },
+            }
         )
-    st.caption("The 200-day moving average can act as support during a major pullback, but proximity alone is not a buy signal. Look for stabilization, improving volume, and strengthening money flow.")
 
-    st.subheader("📋 Full ranked intelligence table")
-    preferred = [
-        "Ticker","AI Groups","Hidden Gem Groups","Hidden Gem Score","Opportunity Score","Institutional Score","Readiness Score","Quality Score","Setup","Status","Why",
-        "Price","Previous Close","Day Change $","Day Change %","AI Semi Pullback","Breakout Level","Distance to Breakout %","Intraday Volume Pace","Volume Ratio","RSI 14","CMF 20",
-        "OBV Trend 20D %","A/D Trend 20D %","Up/Down Volume Ratio","RS vs SPY 3M %","RS vs NVDA 3M %",
-        "MA50","MA150","200D MA","50D MA Slope %","150D MA Slope %","200D MA Slope %",
-        "Distance From 150D MA %","Distance From 200D MA %","AI 200D Pullback Watch","Base Range %","ATR Compression",
-        "Alert Ready","TradingView","Revenue Growth %","EPS Growth %","FCF Margin %","Gross Margin %",
-        "Institutional Ownership %","Insider Ownership %","Forward P/E","Analyst Target Upside %","Market Cap",
-    ]
-    cols = [c for c in preferred if c in results.columns]
-    display = results[cols].copy()
-    if "Market Cap" in display.columns:
-        display["Market Cap"] = display["Market Cap"].apply(lambda x: f"${x/1e9:.1f}B" if pd.notna(x) else "")
+    st.subheader("💎 Hidden Gems Under $20")
+    hidden = results[results["Ticker"].isin(HIDDEN_GEM_TICKERS) & results["Price"].between(1,20,inclusive="both")].copy()
+    hidden = hidden.sort_values(["Hidden Gem Score","Alpha Business Score","Accumulation Score"], ascending=False).head(20)
+    if hidden.empty:
+        st.info("No researched under-$20 candidates passed the current filters.")
+    else:
+        hcols = ["Ticker","Hidden Gem Groups","Price","Hidden Gem Score","Alpha Business Score","Revenue Growth %","FCF Margin %","Debt Quality","Accumulation Score","Catalyst","Days to Earnings","TradingView"]
+        hcols = [c for c in hcols if c in hidden.columns]
+        st.dataframe(
+            hidden[hcols], use_container_width=True, hide_index=True,
+            column_config={
+                "Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Hidden Gem Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Alpha Business Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Accumulation Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Revenue Growth %": st.column_config.NumberColumn(format="%.2f%%"),
+                "FCF Margin %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Days to Earnings": st.column_config.NumberColumn(format="%.0f"),
+                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
+            }
+        )
 
-    st.dataframe(
-        display,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Opportunity Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-            "Institutional Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-            "Readiness Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-            "Quality Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
-            "Price": st.column_config.NumberColumn(format="$%.2f"),
-            "Previous Close": st.column_config.NumberColumn(format="$%.2f"),
-            "Day Change $": st.column_config.NumberColumn(format="$%.2f"),
-            "Day Change %": st.column_config.NumberColumn(format="%.2f%%"),
-            "AI Semi Pullback": st.column_config.CheckboxColumn(),
-            "Breakout Level": st.column_config.NumberColumn(format="$%.2f"),
-            "MA50": st.column_config.NumberColumn(format="$%.2f"),
-            "MA150": st.column_config.NumberColumn(format="$%.2f"),
-            "200D MA": st.column_config.NumberColumn(format="$%.2f"),
-            "Volume Ratio": st.column_config.NumberColumn(format="%.2fx"),
-            "Intraday Volume Pace": st.column_config.NumberColumn(format="%.2fx"),
-            "Distance to Breakout %": st.column_config.NumberColumn(format="%.2f%%"),
-            "Distance From 150D MA %": st.column_config.NumberColumn(format="%.2f%%"),
-            "Distance From 200D MA %": st.column_config.NumberColumn(format="%.2f%%"),
-            "AI 200D Pullback Watch": st.column_config.CheckboxColumn(),
-            "Alert Ready": st.column_config.CheckboxColumn(),
-            "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
-        },
-    )
+    with st.expander("📋 Full research data", expanded=False):
+        st.dataframe(results, use_container_width=True, hide_index=True)
 
-    st.download_button(
-        "⬇️ Download V4.1 results",
-        results.to_csv(index=False).encode("utf-8"),
-        "heartbeat_v4_0_1_results.csv",
-        "text/csv",
-        use_container_width=True,
-    )
-
-    st.subheader("Chart inspection")
-    chosen = st.selectbox("Choose a stock", results["Ticker"].tolist())
-    chart_raw = download_prices((chosen,), period="1y")
-    chart_df = frame_for(chart_raw, chosen, 1)
-    if not chart_df.empty:
-        price_chart = pd.DataFrame({
-            chosen: chart_df["Close"],
-            "50-day moving average": chart_df["Close"].rolling(50).mean(),
-            "150-day moving average": chart_df["Close"].rolling(150).mean(),
-            "200-day moving average": chart_df["Close"].rolling(200).mean(),
-        })
-        st.line_chart(price_chart, height=340)
-
-        vol_chart = pd.DataFrame({
-            "Daily volume": chart_df["Volume"],
-            "50-day average": chart_df["Volume"].rolling(50).mean(),
-        }).tail(120)
-        st.bar_chart(vol_chart, height=260)
-
-st.markdown(
-    """
-    <div class="note">
-      <b>Important:</b> V4.1 ranks technical opportunity and evidence of accumulation; it does not predict outcomes or guarantee gains.
-      Institutional Score is an estimate built from public price-and-volume behavior, not verified real-time institutional order flow.
-      Always inspect the chart, earnings date, and company-specific risks before acting.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+    st.caption("Alpha Capital separates business quality from market timing. A high business score is not a guarantee of future returns, and a breakout or pullback is not automatically a buy signal.")
