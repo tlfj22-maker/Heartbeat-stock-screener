@@ -49,8 +49,8 @@ st.markdown(
 st.markdown(
     """
     <div class="hero">
-      <h1>📈 Troy's Heartbeat Stock Screener V4.0.1</h1>
-      <p>Opportunity Score, Institutional Score, AI leadership heatmap, breakout readiness, unusual volume, daily semiconductor pullbacks, and major pullback monitoring.</p>
+      <h1>📈 Troy's Heartbeat Stock Screener V4.1</h1>
+      <p>Opportunity intelligence, institutional accumulation, AI leadership, Smart Money Radar, and an under-$20 Hidden Gem Scanner with scheduled catalyst tracking.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -119,6 +119,39 @@ for group, members in AI_GROUPS.items():
     for ticker in members:
         TICKER_TO_GROUPS.setdefault(ticker, []).append(group)
 
+
+# -----------------------------------------------------------------------------
+# Hidden-gem universe: liquid small/mid-cap names in sectors with frequent
+# earnings, contract, clinical, commodity, infrastructure, or AI catalysts.
+# Price and market-cap rules are applied dynamically, so being listed here is
+# only an invitation to scan — never an endorsement.
+# -----------------------------------------------------------------------------
+HIDDEN_GEM_GROUPS = {
+    "Energy & Natural Gas": [
+        "EQT","AR","RRC","CTRA","TELL","NEXT","NFE","CLNE","REI","KOS","VTLE","AMPY","SD","NGS","RES","OIS","HLX","BORR","VAL","DHT","NAT","TNP","GASS",
+    ],
+    "Oilfield, Chemicals & Materials": [
+        "TROX","CC","HUN","OLN","KRO","KOP","NGVT","IOSP","CBT","KALU","CENX","TMC","LAC","LTHM","UUUU","URG","UEC","DNN","LEU",
+    ],
+    "AI, Cooling & Data Infrastructure": [
+        "AAON","MOD","VRT","CLS","JBL","SANM","FLEX","AEHR","COHU","FORM","VECO","AIP","INOD","BBAI","SOUN","AI","VERI","REKR","OUST","AEVA","LAZR","LIDR","ARBE","KULR","NVTS","INDI","SMFL",
+    ],
+    "Industrials, Defense & Infrastructure": [
+        "AIRJ","STRL","PRIM","IESC","GVA","MTZ","TWI","TGI","ATRO","AVAV","KTOS","RCAT","ONDS","UMAC","RDW","ASTS","RKLB","BWXT","LESL","HYLN","EOSE","STEM","FLNC","NVRI","MNTK",
+    ],
+    "Healthcare & Biotechnology": [
+        "BIIB","RXRX","TEM","CRSP","NTLA","EDIT","BEAM","VERV","SANA","ARCT","KYMR","RVMD","IMVT","VKTX","TGTX","CYTK","IOVA","FATE","SLS","ALT","AKRO","MDGL","GERN","DYN","PRME","NAMS","MRUS","JANX","CGEM","ERAS","ELEV","DAWN","IRON","KURA","ZYME","ABCL","SDGR",
+    ],
+    "Power, Nuclear & Grid": [
+        "SMR","OKLO","NNE","UUUU","LEU","UEC","DNN","URG","LTBR","EOSE","FLNC","STEM","AMTX","GEVO","CLSK","IREN","CIFR","CORZ","WULF","BTDR",
+    ],
+}
+HIDDEN_GEM_TICKERS = sorted({t for members in HIDDEN_GEM_GROUPS.values() for t in members})
+HIDDEN_TICKER_TO_GROUPS: dict[str, list[str]] = {}
+for group, members in HIDDEN_GEM_GROUPS.items():
+    for ticker in members:
+        HIDDEN_TICKER_TO_GROUPS.setdefault(ticker, []).append(group)
+
 FINANCE_TICKERS = [
     "JPM","BAC","WFC","C","GS","MS","SCHW","BLK","AXP","V","MA","SPGI","CME","ICE","CB"
 ]
@@ -136,6 +169,8 @@ CONSUMER_TICKERS = [
 ]
 
 UNIVERSES = {
+    "V4.1 intelligence + hidden gems": sorted(set(AI_TICKERS + HIDDEN_GEM_TICKERS)),
+    "Hidden gems — under $20 candidates": HIDDEN_GEM_TICKERS,
     "AI ecosystem — expanded": AI_TICKERS,
     "Financials": FINANCE_TICKERS,
     "Energy & oil": ENERGY_TICKERS,
@@ -144,7 +179,7 @@ UNIVERSES = {
     "Consumer": CONSUMER_TICKERS,
     "All built-in sectors": sorted(set(
         AI_TICKERS + FINANCE_TICKERS + ENERGY_TICKERS +
-        INDUSTRIAL_TICKERS + HEALTHCARE_TICKERS + CONSUMER_TICKERS
+        INDUSTRIAL_TICKERS + HEALTHCARE_TICKERS + CONSUMER_TICKERS + HIDDEN_GEM_TICKERS
     )),
 }
 
@@ -530,6 +565,41 @@ def technical_row(
     }
 
 
+def safe_days_to_date(value) -> float:
+    """Convert yfinance date-like values to calendar days from today."""
+    try:
+        ts = pd.Timestamp(value)
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert("America/New_York").tz_localize(None)
+        return float((ts.normalize() - pd.Timestamp.now().normalize()).days)
+    except Exception:
+        return np.nan
+
+
+def hidden_gem_score(row: pd.Series) -> float:
+    """Rank under-$20 candidates without pretending a catalyst guarantees gains."""
+    score = 0.0
+    score += min(float(row.get("Opportunity Score", 0)), 100) * 0.25
+    score += min(float(row.get("Institutional Score", 0)), 100) * 0.20
+
+    rev = row.get("Revenue Growth %", np.nan)
+    score += 15 if pd.notna(rev) and rev >= 25 else 12 if pd.notna(rev) and rev >= 10 else 7 if pd.notna(rev) and rev > 0 else 0
+
+    fcf = row.get("Free Cash Flow", np.nan)
+    fcf_margin = row.get("FCF Margin %", np.nan)
+    score += 15 if pd.notna(fcf) and fcf > 0 and pd.notna(fcf_margin) and fcf_margin >= 8 else 10 if pd.notna(fcf) and fcf > 0 else 3 if pd.notna(fcf_margin) and fcf_margin > -5 else 0
+
+    upside = row.get("Analyst Target Upside %", np.nan)
+    score += 10 if pd.notna(upside) and upside >= 30 else 7 if pd.notna(upside) and upside >= 15 else 3 if pd.notna(upside) and upside > 0 else 0
+
+    days = row.get("Days to Earnings", np.nan)
+    score += 10 if pd.notna(days) and 3 <= days <= 30 else 6 if pd.notna(days) and 31 <= days <= 60 else 2 if pd.notna(days) and 0 <= days < 3 else 0
+
+    cap = row.get("Market Cap", np.nan)
+    score += 5 if pd.notna(cap) and 100_000_000 <= cap <= 5_000_000_000 else 3 if pd.notna(cap) and cap <= 15_000_000_000 else 0
+    return round(min(score, 100), 1)
+
+
 @st.cache_data(ttl=21600, show_spinner=False)
 def fundamentals(ticker: str) -> dict:
     try:
@@ -542,6 +612,11 @@ def fundamentals(ticker: str) -> dict:
         op_margin = info.get("operatingMargins")
         fcf = info.get("freeCashflow")
         revenue = info.get("totalRevenue")
+        total_cash = info.get("totalCash")
+        total_debt = info.get("totalDebt")
+        short_float = info.get("shortPercentOfFloat")
+        sector = info.get("sector")
+        industry = info.get("industry")
         fcf_margin = fcf / revenue if fcf is not None and revenue not in (None, 0) else None
         target_upside = target / price - 1 if target and price else None
 
@@ -560,6 +635,23 @@ def fundamentals(ticker: str) -> dict:
         if target_upside is not None:
             score += 3 if target_upside >= .15 else 2 if target_upside > 0 else 0
         pe = info.get("forwardPE")
+
+        next_earnings = pd.NaT
+        try:
+            cal = yf.Ticker(ticker).calendar
+            if isinstance(cal, dict):
+                raw_date = cal.get("Earnings Date")
+                if isinstance(raw_date, (list, tuple)) and raw_date:
+                    next_earnings = pd.Timestamp(raw_date[0])
+                elif raw_date is not None:
+                    next_earnings = pd.Timestamp(raw_date)
+            elif isinstance(cal, pd.DataFrame) and not cal.empty:
+                if "Earnings Date" in cal.index:
+                    next_earnings = pd.Timestamp(cal.loc["Earnings Date"].iloc[0])
+        except Exception:
+            pass
+        days_to_earnings = safe_days_to_date(next_earnings) if pd.notna(next_earnings) else np.nan
+
         if pe is not None:
             score += 2 if 0 < pe <= 25 else 1 if 25 < pe <= 40 else 0
 
@@ -574,6 +666,15 @@ def fundamentals(ticker: str) -> dict:
             "Forward P/E": pe,
             "Analyst Target Upside %": target_upside * 100 if target_upside is not None else np.nan,
             "Market Cap": info.get("marketCap"),
+            "Free Cash Flow": fcf,
+            "Total Cash": total_cash,
+            "Total Debt": total_debt,
+            "Short Float %": short_float * 100 if short_float is not None else np.nan,
+            "Sector": sector or "",
+            "Industry": industry or "",
+            "Next Earnings": next_earnings,
+            "Days to Earnings": days_to_earnings,
+            "Catalyst": "Scheduled earnings" if pd.notna(days_to_earnings) and 0 <= days_to_earnings <= 60 else "No scheduled event found",
             "Fundamental Score": score,
         }
     except Exception:
@@ -594,8 +695,10 @@ def build_heatmap(results: pd.DataFrame) -> pd.DataFrame:
             + subset["RS vs SPY 3M %"].clip(-20, 30).fillna(0).mean() * 0.35
         )
         strength = float(np.clip(strength, 0, 100))
+        state = "🟢 Leading" if strength >= 65 else "🟡 Improving" if strength >= 50 else "🟠 Mixed" if strength >= 35 else "🔴 Weak"
         rows.append({
             "AI Group": group,
+            "State": state,
             "Group Strength": round(strength, 1),
             "Average Institutional": round(subset["Institutional Score"].mean(), 1),
             "Average Opportunity": round(subset["Opportunity Score"].mean(), 1),
@@ -623,8 +726,13 @@ with st.expander("⚙️ Screener settings", expanded=False):
         placeholder="NVDA, AVGO, MU, EQT, BIIB",
     )
     include_fund = st.checkbox(
-        "Include fundamentals and analyst data (slower for large universes)",
+        "Include fundamentals and analyst data for every stock (slower)",
         value=False,
+    )
+    auto_hidden_fund = st.checkbox(
+        "Automatically research under-$20 hidden-gem candidates",
+        value=True,
+        help="Fetches fundamentals and the next scheduled earnings date only for qualifying under-$20 candidates.",
     )
 
 params = Params(
@@ -635,12 +743,21 @@ params = Params(
     min_avg_dollar_volume=min_dollar_vol * 1_000_000,
 )
 
+hidden_params = Params(
+    min_volume_ratio=volume_ratio,
+    base_days=base_days,
+    max_base_range=max_base,
+    breakout_days=breakout_days,
+    min_price=1.0,
+    min_avg_dollar_volume=2_000_000,
+)
+
 tickers = [clean_ticker(t) for t in custom.split(",") if t.strip()] if custom.strip() else UNIVERSES[universe_name]
 
 session_fraction, session_label = market_elapsed_fraction()
 st.caption(f"⏱️ {session_label}. Selected universe: {len(tickers)} stocks. Intraday volume pace adjusts today's volume for time elapsed.")
 
-if st.button("🔍 Run V4.0.1 intelligence scan", type="primary", use_container_width=True):
+if st.button("🔍 Run V4.1 intelligence scan", type="primary", use_container_width=True):
     with st.spinner(f"Scanning {len(tickers)} stocks…"):
         benchmarks = download_prices(("SPY", "NVDA"))
         spy = frame_for(benchmarks, "SPY", 2)
@@ -651,9 +768,12 @@ if st.button("🔍 Run V4.0.1 intelligence scan", type="primary", use_container_
         bar = st.progress(0)
         for i, ticker in enumerate(tickers):
             df = frame_for(raw, ticker, len(tickers))
-            row = technical_row(ticker, df, spy, nvda, params, session_fraction)
+            active_params = hidden_params if ticker in HIDDEN_GEM_TICKERS else params
+            row = technical_row(ticker, df, spy, nvda, active_params, session_fraction)
             if row:
-                if include_fund:
+                row["Hidden Gem Groups"] = ", ".join(HIDDEN_TICKER_TO_GROUPS.get(ticker, []))
+                should_research_hidden = auto_hidden_fund and ticker in HIDDEN_GEM_TICKERS and row["Price"] <= 20
+                if include_fund or should_research_hidden:
                     f = fundamentals(ticker)
                     row.update(f)
                 rows.append(row)
@@ -702,6 +822,21 @@ if st.button("🔍 Run V4.0.1 intelligence scan", type="primary", use_container_
                 100,
                 results["Opportunity Score"] + results["Fundamental Score"].fillna(0) * 0.35,
             ).round(1)
+
+        # Fundamental ownership is a useful confirmation, but not the same as
+        # current accumulation. Keep its influence intentionally modest.
+        if "Institutional Ownership %" in results.columns:
+            ownership_bonus = results["Institutional Ownership %"].fillna(0).clip(0, 90) / 30
+            results["Institutional Score"] = np.minimum(100, results["Institutional Score"] + ownership_bonus).round(1)
+
+        results["Hidden Gem Score"] = np.nan
+        hidden_mask = (
+            results["Ticker"].isin(HIDDEN_GEM_TICKERS)
+            & (results["Price"] <= 20)
+            & (results["Price"] >= 1)
+        )
+        if hidden_mask.any():
+            results.loc[hidden_mask, "Hidden Gem Score"] = results.loc[hidden_mask].apply(hidden_gem_score, axis=1)
 
         results = results.sort_values(
             ["Opportunity Score", "Institutional Score", "Readiness Score"],
@@ -774,6 +909,67 @@ if "results_v4" in st.session_state:
             },
         )
     st.caption("This ranks the largest same-day percentage declines among AI chips, memory/storage, and semiconductor-equipment companies. A large one-day drop can be a buying opportunity or a warning; confirm the news, earnings context, volume, and technical support before acting.")
+
+    st.subheader("💎 Hidden Gem Scanner — under $20")
+    hidden = results[
+        results["Ticker"].isin(HIDDEN_GEM_TICKERS)
+        & results["Price"].between(1, 20, inclusive="both")
+    ].copy()
+    if "Market Cap" in hidden.columns:
+        hidden = hidden[(hidden["Market Cap"].isna()) | hidden["Market Cap"].between(50_000_000, 15_000_000_000, inclusive="both")]
+    hidden = hidden.sort_values(["Hidden Gem Score", "Opportunity Score", "Institutional Score"], ascending=False).head(20)
+    if hidden.empty:
+        st.info("No researched under-$20 candidates passed the current liquidity and technical filters. Select the V4.1 or Hidden Gems universe and run the scan again.")
+    else:
+        hidden_cols = [c for c in [
+            "Ticker","Hidden Gem Groups","Price","Hidden Gem Score","Opportunity Score","Institutional Score",
+            "Revenue Growth %","FCF Margin %","Free Cash Flow","Market Cap","Analyst Target Upside %",
+            "Catalyst","Days to Earnings","Intraday Volume Pace","Distance to Breakout %","TradingView"
+        ] if c in hidden.columns]
+        hidden_display = hidden[hidden_cols].copy()
+        st.dataframe(
+            hidden_display, use_container_width=True, hide_index=True,
+            column_config={
+                "Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Hidden Gem Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+                "Opportunity Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+                "Institutional Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+                "Revenue Growth %": st.column_config.NumberColumn(format="%.1f%%"),
+                "FCF Margin %": st.column_config.NumberColumn(format="%.1f%%"),
+                "Free Cash Flow": st.column_config.NumberColumn(format="$%.0f"),
+                "Market Cap": st.column_config.NumberColumn(format="$%.0f"),
+                "Analyst Target Upside %": st.column_config.NumberColumn(format="%.1f%%"),
+                "Days to Earnings": st.column_config.NumberColumn(format="%.0f days"),
+                "Intraday Volume Pace": st.column_config.NumberColumn("Vol pace", format="%.2fx"),
+                "Distance to Breakout %": st.column_config.NumberColumn("To breakout", format="%.2f%%"),
+                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
+            },
+        )
+        st.caption("Hidden Gem Score rewards improving fundamentals, positive free cash flow, accumulation, technical opportunity, liquidity, and a verifiable scheduled earnings catalyst. It does not estimate the probability that the catalyst outcome will be positive.")
+
+    st.subheader("🦅 Smart Money Radar")
+    smart = results[
+        (results["Institutional Score"] >= 65)
+        & (results["CMF 20"] > 0)
+        & (results["OBV Trend 20D %"] > 0)
+    ].sort_values(["Institutional Score", "Opportunity Score"], ascending=False).head(15)
+    if smart.empty:
+        st.info("No stocks currently meet all Smart Money Radar confirmation rules.")
+    else:
+        st.dataframe(
+            smart[["Ticker","AI Groups","Hidden Gem Groups","Institutional Score","Opportunity Score","CMF 20","OBV Trend 20D %","Up/Down Volume Ratio","RS vs SPY 3M %","Intraday Volume Pace","TradingView"]],
+            use_container_width=True, hide_index=True,
+            column_config={
+                "Institutional Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+                "Opportunity Score": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+                "CMF 20": st.column_config.NumberColumn(format="%.2f"),
+                "OBV Trend 20D %": st.column_config.NumberColumn(format="%.1f%%"),
+                "Up/Down Volume Ratio": st.column_config.NumberColumn(format="%.2fx"),
+                "RS vs SPY 3M %": st.column_config.NumberColumn(format="%.1f%%"),
+                "Intraday Volume Pace": st.column_config.NumberColumn(format="%.2fx"),
+                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
+            },
+        )
 
     a1, a2 = st.columns(2)
     with a1:
@@ -880,7 +1076,7 @@ if "results_v4" in st.session_state:
 
     st.subheader("📋 Full ranked intelligence table")
     preferred = [
-        "Ticker","AI Groups","Opportunity Score","Institutional Score","Readiness Score","Quality Score","Setup","Status","Why",
+        "Ticker","AI Groups","Hidden Gem Groups","Hidden Gem Score","Opportunity Score","Institutional Score","Readiness Score","Quality Score","Setup","Status","Why",
         "Price","Previous Close","Day Change $","Day Change %","AI Semi Pullback","Breakout Level","Distance to Breakout %","Intraday Volume Pace","Volume Ratio","RSI 14","CMF 20",
         "OBV Trend 20D %","A/D Trend 20D %","Up/Down Volume Ratio","RS vs SPY 3M %","RS vs NVDA 3M %",
         "MA50","MA150","200D MA","50D MA Slope %","150D MA Slope %","200D MA Slope %",
@@ -923,7 +1119,7 @@ if "results_v4" in st.session_state:
     )
 
     st.download_button(
-        "⬇️ Download V4.0.1 results",
+        "⬇️ Download V4.1 results",
         results.to_csv(index=False).encode("utf-8"),
         "heartbeat_v4_0_1_results.csv",
         "text/csv",
@@ -952,7 +1148,7 @@ if "results_v4" in st.session_state:
 st.markdown(
     """
     <div class="note">
-      <b>Important:</b> V4.0.1 ranks technical opportunity and evidence of accumulation; it does not predict outcomes or guarantee gains.
+      <b>Important:</b> V4.1 ranks technical opportunity and evidence of accumulation; it does not predict outcomes or guarantee gains.
       Institutional Score is an estimate built from public price-and-volume behavior, not verified real-time institutional order flow.
       Always inspect the chart, earnings date, and company-specific risks before acting.
     </div>
