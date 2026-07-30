@@ -11,7 +11,7 @@ import streamlit as st
 import yfinance as yf
 
 st.set_page_config(
-    page_title="Troy's Heartbeat Screener",
+    page_title="Alpha Capital V5.1",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -49,7 +49,7 @@ st.markdown(
 st.markdown(
     """
     <div class="hero">
-      <h1>📈 Alpha Capital V5</h1>
+      <h1>📈 Alpha Capital V5.1</h1>
       <p>Business-first stock research: company quality, debt quality, future growth, accumulation, breakout timing, pullbacks, and hidden gems.</p>
     </div>
     """,
@@ -119,7 +119,6 @@ for group, members in AI_GROUPS.items():
     for ticker in members:
         TICKER_TO_GROUPS.setdefault(ticker, []).append(group)
 
-
 # -----------------------------------------------------------------------------
 # Hidden-gem universe: liquid small/mid-cap names in sectors with frequent
 # earnings, contract, clinical, commodity, infrastructure, or AI catalysts.
@@ -183,7 +182,6 @@ UNIVERSES = {
     )),
 }
 
-
 @dataclass(frozen=True)
 class Params:
     ma_days: int = 150
@@ -195,7 +193,6 @@ class Params:
     max_extension: float = 0.25
     min_price: float = 5.0
     min_avg_dollar_volume: float = 25_000_000
-
 
 def market_elapsed_fraction() -> tuple[float, str]:
     now = datetime.now(ZoneInfo("America/New_York"))
@@ -212,10 +209,8 @@ def market_elapsed_fraction() -> tuple[float, str]:
     fraction = min(max(elapsed / session, 0.08), 1.0)
     return fraction, f"Market session {fraction:.0%} complete"
 
-
 def clean_ticker(t: str) -> str:
     return t.strip().upper().replace(".", "-")
-
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def download_prices(tickers: tuple[str, ...], period: str = "2y") -> pd.DataFrame:
@@ -229,7 +224,6 @@ def download_prices(tickers: tuple[str, ...], period: str = "2y") -> pd.DataFram
         progress=False,
     )
 
-
 def frame_for(raw: pd.DataFrame, ticker: str, total: int) -> pd.DataFrame:
     try:
         df = raw.copy() if total == 1 else raw[ticker].copy()
@@ -237,14 +231,12 @@ def frame_for(raw: pd.DataFrame, ticker: str, total: int) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
-
 def safe_last(series: pd.Series, default: float = np.nan) -> float:
     try:
         value = float(series.iloc[-1])
         return value if np.isfinite(value) else default
     except Exception:
         return default
-
 
 def calculate_rsi(close: pd.Series, period: int = 14) -> float:
     delta = close.diff()
@@ -254,14 +246,12 @@ def calculate_rsi(close: pd.Series, period: int = 14) -> float:
     rsi = 100 - (100 / (1 + rs))
     return safe_last(rsi, 50.0)
 
-
 def calculate_cmf(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, period: int = 20) -> float:
     spread = (high - low).replace(0, np.nan)
     multiplier = ((close - low) - (high - close)) / spread
     money_flow_volume = multiplier.fillna(0) * volume
     cmf = money_flow_volume.rolling(period).sum() / volume.rolling(period).sum().replace(0, np.nan)
     return safe_last(cmf, 0.0)
-
 
 def relative_return(stock: pd.Series, benchmark: pd.Series, days: int = 63) -> float:
     common = stock.index.intersection(benchmark.index)
@@ -270,7 +260,6 @@ def relative_return(stock: pd.Series, benchmark: pd.Series, days: int = 63) -> f
     s = stock.loc[common]
     b = benchmark.loc[common]
     return float((s.iloc[-1] / s.iloc[-1-days] - 1) - (b.iloc[-1] / b.iloc[-1-days] - 1)) * 100
-
 
 def score_accumulation(
     price: float,
@@ -308,7 +297,6 @@ def score_accumulation(
     score += 15 if pd.notna(rs_nvda) and rs_nvda >= 10 else 10 if pd.notna(rs_nvda) and rs_nvda >= 0 else 4 if pd.notna(rs_nvda) and rs_nvda >= -10 else 0
 
     return round(min(score, 100), 1)
-
 
 def score_opportunity(
     breakout_pct: float,
@@ -373,7 +361,6 @@ def score_opportunity(
     score += accumulation_score * 0.10
 
     return round(min(score, 100), 1)
-
 
 def technical_row(
     ticker: str,
@@ -564,7 +551,6 @@ def technical_row(
         "Avg Dollar Volume": dollar_vol,
     }
 
-
 def safe_days_to_date(value) -> float:
     """Convert yfinance date-like values to calendar days from today."""
     try:
@@ -574,7 +560,6 @@ def safe_days_to_date(value) -> float:
         return float((ts.normalize() - pd.Timestamp.now().normalize()).days)
     except Exception:
         return np.nan
-
 
 def hidden_gem_score(row: pd.Series) -> float:
     """Rank under-$20 candidates without pretending a catalyst guarantees gains."""
@@ -598,7 +583,6 @@ def hidden_gem_score(row: pd.Series) -> float:
     cap = row.get("Market Cap", np.nan)
     score += 5 if pd.notna(cap) and 100_000_000 <= cap <= 5_000_000_000 else 3 if pd.notna(cap) and cap <= 15_000_000_000 else 0
     return round(min(score, 100), 1)
-
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def fundamentals(ticker: str) -> dict:
@@ -842,6 +826,56 @@ def fundamentals(ticker: str) -> dict:
             "Fundamental Score": 0.0,
         }
 
+def ensure_columns(df: pd.DataFrame, defaults: dict[str, object]) -> pd.DataFrame:
+    """Add optional columns so technical-only scans still render safely."""
+    for column, default in defaults.items():
+        if column not in df.columns:
+            df[column] = default
+    return df
+
+def opportunity_explanation(row: pd.Series) -> str:
+    reasons: list[str] = []
+    if row.get("Alpha Business Score", 0) >= 75:
+        reasons.append("strong business")
+    if row.get("Accumulation Score", 0) >= 65:
+        reasons.append("institutional accumulation")
+    if row.get("Readiness Score", 0) >= 70:
+        reasons.append("technically ready")
+    distance = row.get("Distance to Breakout %", np.nan)
+    if pd.notna(distance) and -3 <= distance <= 1:
+        reasons.append("near breakout")
+    rsi = row.get("RSI 14", np.nan)
+    if pd.notna(rsi) and 38 <= rsi <= 62:
+        reasons.append("healthy RSI")
+    if not reasons:
+        reasons.append(str(row.get("Why", "setup still developing")))
+    return ", ".join(reasons[:4])
+
+def pullback_classification(row: pd.Series) -> tuple[str, str]:
+    day = row.get("Day Change %", np.nan)
+    dist = row.get("Distance From 200D MA %", np.nan)
+    rsi = row.get("RSI 14", np.nan)
+    business = row.get("Alpha Business Score", 0)
+    accumulation = row.get("Accumulation Score", 0)
+    slope = row.get("200D MA Slope %", np.nan)
+
+    if business >= 70 and accumulation >= 55 and pd.notna(slope) and slope >= 0 and pd.notna(dist) and -10 <= dist <= 6:
+        label = "🟢 Healthy pullback"
+        why = "strong business, constructive long-term trend, and price near the 200-day average"
+    elif business >= 70 and pd.notna(day) and day <= -3:
+        label = "🟡 Emotional selloff"
+        why = "large daily decline despite above-average business quality"
+    elif pd.notna(rsi) and rsi <= 35 and business >= 60:
+        label = "🟡 Oversold watch"
+        why = "oversold momentum with acceptable business quality"
+    elif pd.notna(slope) and slope < -3 and pd.notna(dist) and dist < -10:
+        label = "🔴 Broken trend"
+        why = "price is well below a falling 200-day average"
+    else:
+        label = "🟠 Needs confirmation"
+        why = "pullback is present, but trend or accumulation confirmation is incomplete"
+    return label, why
+
 def build_heatmap(results: pd.DataFrame) -> pd.DataFrame:
     rows = []
     ai_results = results[results["Ticker"].isin(AI_TICKERS)].copy()
@@ -868,7 +902,6 @@ def build_heatmap(results: pd.DataFrame) -> pd.DataFrame:
             "Leader": subset.sort_values("Opportunity Score", ascending=False).iloc[0]["Ticker"],
         })
     return pd.DataFrame(rows).sort_values("Group Strength", ascending=False) if rows else pd.DataFrame()
-
 
 with st.expander("⚙️ Screener settings", expanded=False):
     c1, c2, c3 = st.columns(3)
@@ -919,7 +952,7 @@ tickers = [clean_ticker(t) for t in custom.split(",") if t.strip()] if custom.st
 session_fraction, session_label = market_elapsed_fraction()
 st.caption(f"⏱️ {session_label}. Selected universe: {len(tickers)} stocks. Intraday volume pace adjusts today's volume for time elapsed.")
 
-if st.button("🔍 Run Alpha Capital V5 scan", type="primary", use_container_width=True):
+if st.button("🔍 Run Alpha Capital V5.1 scan", type="primary", use_container_width=True):
     with st.spinner(f"Scanning {len(tickers)} stocks…"):
         benchmarks = download_prices(("SPY", "NVDA"))
         spy = frame_for(benchmarks, "SPY", 2)
@@ -1000,22 +1033,87 @@ if st.button("🔍 Run Alpha Capital V5 scan", type="primary", use_container_wid
         if hidden_mask.any():
             results.loc[hidden_mask, "Hidden Gem Score"] = results.loc[hidden_mask].apply(hidden_gem_score, axis=1)
 
+        results = ensure_columns(results, {
+            "Alpha Business Score": 0.0,
+            "Business Quality": 0.0,
+            "Future Growth": 0.0,
+            "Financial Strength": 0.0,
+            "Debt Quality": "⚪ Limited data",
+            "Revenue Growth %": np.nan,
+            "FCF Margin %": np.nan,
+            "Days to Earnings": np.nan,
+            "Catalyst": "No scheduled event found",
+        })
+
+        # V5.1 flagship score: business quality and technical timing remain visible,
+        # but are combined into one decision-friendly ranking.
+        results["Heartbeat Score"] = (
+            results["Alpha Business Score"].fillna(0) * 0.35
+            + results["Opportunity Score"].fillna(0) * 0.25
+            + results["Accumulation Score"].fillna(0) * 0.20
+            + results["Readiness Score"].fillna(0) * 0.15
+            + results["Quality Score"].fillna(0) * 0.05
+        ).clip(0, 100).round(1)
+        results["Why Opportunity"] = results.apply(opportunity_explanation, axis=1)
+
+        pullback_details = results.apply(pullback_classification, axis=1)
+        results["Pullback Type"] = [x[0] for x in pullback_details]
+        results["Pullback Why"] = [x[1] for x in pullback_details]
+
         results = results.sort_values(
-            ["Alpha Business Score", "Accumulation Score", "Readiness Score"],
+            ["Heartbeat Score", "Alpha Business Score", "Accumulation Score"],
             ascending=[False, False, False],
             na_position="last",
         )
-        st.session_state["results_v5"] = results
-        st.session_state["heatmap_v5"] = build_heatmap(results)
+        st.session_state["results_v5_1"] = results
+        st.session_state["heatmap_v5_1"] = build_heatmap(results)
 
-if "results_v5" in st.session_state:
-    results = st.session_state["results_v5"].copy()
+if "results_v5_1" in st.session_state:
+    results = st.session_state["results_v5_1"].copy()
 
     # Ensure business rankings are business-first, while technical timing stays separate.
     if "Alpha Business Score" not in results.columns:
         results["Alpha Business Score"] = 0.0
     if "Accumulation Score" not in results.columns:
         results["Accumulation Score"] = 0.0
+
+    st.subheader("❤️ Best Opportunities")
+    st.caption("V5.1's flagship view combines business quality, opportunity, accumulation, readiness, and technical quality. Use the component scores to see exactly why a stock ranks highly.")
+    best = results.sort_values(
+        ["Heartbeat Score", "Alpha Business Score", "Accumulation Score"],
+        ascending=False,
+        na_position="last",
+    ).head(15)
+    if best.empty:
+        st.info("Run a scan to build the Best Opportunities dashboard.")
+    else:
+        leader = best.iloc[0]
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("Best opportunity", leader["Ticker"])
+        b2.metric("Heartbeat Score", f"{leader['Heartbeat Score']:.1f}")
+        b3.metric("Business quality", f"{leader.get('Alpha Business Score', 0):.1f}")
+        b4.metric("Accumulation", f"{leader.get('Accumulation Score', 0):.1f}")
+
+        best_cols = [
+            "Ticker", "Company", "Price", "Heartbeat Score", "Alpha Business Score",
+            "Opportunity Score", "Accumulation Score", "Readiness Score",
+            "Day Change %", "Distance to Breakout %", "Why Opportunity", "TradingView"
+        ]
+        best_cols = [c for c in best_cols if c in best.columns]
+        st.dataframe(
+            best[best_cols], use_container_width=True, hide_index=True,
+            column_config={
+                "Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Heartbeat Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Alpha Business Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Opportunity Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Accumulation Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Readiness Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Day Change %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Distance to Breakout %": st.column_config.NumberColumn(format="%.2f%%"),
+                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
+            },
+        )
 
     st.subheader("🏆 Alpha Business Rankings")
     st.caption("Ranks the strongest businesses first. Debt is graded by affordability and cash generation—not by the headline debt balance. Analyst targets are shown for context but do not drive the business score.")
@@ -1081,7 +1179,7 @@ if "results_v5" in st.session_state:
         st.info("No scanned stocks are within 5% below to 1% above their breakout level.")
     else:
         st.dataframe(
-            breakout[["Ticker","Price","Breakout Level","Distance to Breakout %","Intraday Volume Pace","Readiness Score","Alert Stage","Status","TradingView"]],
+            breakout[["Ticker","Price","Breakout Level","Distance to Breakout %","Intraday Volume Pace","Readiness Score","Alert Stage","Status","Why","TradingView"]],
             use_container_width=True, hide_index=True,
             column_config={
                 "Price": st.column_config.NumberColumn(format="$%.2f"),
@@ -1094,23 +1192,31 @@ if "results_v5" in st.session_state:
         )
 
     st.subheader("🧲 Major Pullbacks")
+    st.caption("Separates healthier pullbacks from emotional selloffs and broken trends. The ranking favors strong businesses rather than simply rewarding the largest decline.")
     pullbacks = results.copy()
     pullbacks["Pullback Rank"] = (
-        pullbacks["Day Change %"].fillna(0).clip(upper=0).abs() * .25
-        + pullbacks["Distance From 200D MA %"].fillna(0).clip(upper=0).abs() * .20
-        + pullbacks["Alpha Business Score"].fillna(0) * .45
+        pullbacks["Alpha Business Score"].fillna(0) * .45
+        + pullbacks["Day Change %"].fillna(0).clip(upper=0).abs().clip(0, 12) / 12 * 25
+        + pullbacks["Distance From 200D MA %"].fillna(0).clip(upper=0).abs().clip(0, 20) / 20 * 20
         + pullbacks["Accumulation Score"].fillna(0) * .10
-    )
-    pullbacks = pullbacks[(pullbacks["Day Change %"] < 0) | (pullbacks["Distance From 200D MA %"].between(-8, 8))]
-    pullbacks = pullbacks.sort_values("Pullback Rank", ascending=False).head(15)
+    ).clip(0, 100).round(1)
+    pullbacks = pullbacks[(pullbacks["Day Change %"] < 0) | (pullbacks["Distance From 200D MA %"].between(-10, 6))]
+    pullbacks = pullbacks.sort_values(["Pullback Rank", "Alpha Business Score"], ascending=False).head(20)
     if pullbacks.empty:
         st.info("No qualifying pullbacks were found.")
     else:
+        healthy_count = int(pullbacks["Pullback Type"].eq("🟢 Healthy pullback").sum())
+        emotional_count = int(pullbacks["Pullback Type"].eq("🟡 Emotional selloff").sum())
+        p1, p2, p3 = st.columns(3)
+        p1.metric("Healthy pullbacks", healthy_count)
+        p2.metric("Emotional selloffs", emotional_count)
+        p3.metric("Top pullback", pullbacks.iloc[0]["Ticker"])
         st.dataframe(
-            pullbacks[["Ticker","Price","Day Change %","Distance From 200D MA %","RSI 14","Alpha Business Score","Accumulation Score","Debt Quality","TradingView"]],
+            pullbacks[["Ticker","Price","Pullback Rank","Pullback Type","Day Change %","Distance From 200D MA %","RSI 14","Alpha Business Score","Accumulation Score","Pullback Why","TradingView"]],
             use_container_width=True, hide_index=True,
             column_config={
                 "Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Pullback Rank": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
                 "Day Change %": st.column_config.NumberColumn(format="%.2f%%"),
                 "Distance From 200D MA %": st.column_config.NumberColumn(format="%.2f%%"),
                 "RSI 14": st.column_config.NumberColumn(format="%.1f"),
@@ -1126,7 +1232,8 @@ if "results_v5" in st.session_state:
     if hidden.empty:
         st.info("No researched under-$20 candidates passed the current filters.")
     else:
-        hcols = ["Ticker","Hidden Gem Groups","Price","Hidden Gem Score","Alpha Business Score","Revenue Growth %","FCF Margin %","Debt Quality","Accumulation Score","Catalyst","Days to Earnings","TradingView"]
+        hidden["Why Hidden Gem"] = hidden.apply(opportunity_explanation, axis=1)
+        hcols = ["Ticker","Hidden Gem Groups","Price","Hidden Gem Score","Alpha Business Score","Revenue Growth %","FCF Margin %","Debt Quality","Accumulation Score","Catalyst","Days to Earnings","Why Hidden Gem","TradingView"]
         hcols = [c for c in hcols if c in hidden.columns]
         st.dataframe(
             hidden[hcols], use_container_width=True, hide_index=True,
