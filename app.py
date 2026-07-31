@@ -49,7 +49,7 @@ st.markdown(
 st.markdown(
     """
     <div class="hero">
-      <h1>📈 Alpha Capital V5.2</h1>
+      <h1>📈 Alpha Capital V5.3</h1>
       <p>Business-first stock research: company quality, debt quality, future growth, accumulation, breakout timing, pullbacks, and hidden gems.</p>
     </div>
     """,
@@ -505,10 +505,12 @@ def technical_row(
     quality_score += 12 if pd.notna(rs_spy) and rs_spy >= 10 else 7 if pd.notna(rs_spy) and rs_spy > 0 else 0
     quality_score = min(quality_score, 100)
 
-    # V5.2: True pullback measurements based on the stock's own 52-week high.
+    # V5.3: True yearly range measurements based on the stock's own history.
     lookback_52w = c.tail(min(252, len(c)))
     high_52w = float(lookback_52w.max()) if not lookback_52w.empty else np.nan
+    low_52w = float(lookback_52w.min()) if not lookback_52w.empty else np.nan
     drawdown_52w = ((price / high_52w) - 1.0) * 100 if pd.notna(high_52w) and high_52w > 0 else np.nan
+    distance_from_52w_low = ((price / low_52w) - 1.0) * 100 if pd.notna(low_52w) and low_52w > 0 else np.nan
 
     reasons = []
     if price > ma150_now:
@@ -538,6 +540,8 @@ def technical_row(
         "Day Change %": day_change_pct,
         "52W High": high_52w,
         "From 52W High %": drawdown_52w,
+        "52W Low": low_52w,
+        "From 52W Low %": distance_from_52w_low,
         "AI Semi Pullback": ticker in AI_SEMI_PULLBACK_TICKERS and pd.notna(day_change_pct) and day_change_pct < 0,
         "Breakout Level": prior_high,
         "Distance to Breakout %": distance_to_breakout,
@@ -926,7 +930,7 @@ tickers = [clean_ticker(t) for t in custom.split(",") if t.strip()] if custom.st
 session_fraction, session_label = market_elapsed_fraction()
 st.caption(f"⏱️ {session_label}. Selected universe: {len(tickers)} stocks. Intraday volume pace adjusts today's volume for time elapsed.")
 
-if st.button("🔍 Run Alpha Capital V5.2 scan", type="primary", use_container_width=True):
+if st.button("🔍 Run Alpha Capital V5.3 scan", type="primary", use_container_width=True):
     with st.spinner(f"Scanning {len(tickers)} stocks…"):
         benchmarks = download_prices(("SPY", "NVDA"))
         spy = frame_for(benchmarks, "SPY", 2)
@@ -1216,6 +1220,74 @@ if "results_v5" in st.session_state:
                 "Accumulation Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
                 "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
             }
+        )
+
+    st.subheader("🧊 Near 52-Week Lows")
+    st.caption("Only companies trading from 0% to 5% above their own 52-week low. Stronger businesses rank above weak companies that are merely cheap.")
+
+    near_lows = results[results["From 52W Low %"].between(0, 5, inclusive="both")].copy()
+
+    def low_zone_type(row: pd.Series) -> str:
+        business = float(row.get("Alpha Business Score", 0) or 0)
+        financial = float(row.get("Financial Strength", 0) or 0)
+        revenue = row.get("Revenue Growth %", np.nan)
+        fcf = row.get("FCF Margin %", np.nan)
+        slope = row.get("200D MA Slope %", np.nan)
+        if business >= 75 and financial >= 12 and (pd.isna(revenue) or revenue >= 0):
+            return "🟢 Quality company near its low"
+        if business >= 60 and pd.notna(slope) and slope >= -4:
+            return "🟡 Turnaround candidate"
+        if business < 45 or (pd.notna(revenue) and revenue < -10) or (pd.notna(fcf) and fcf < -15):
+            return "🔴 Value-trap risk"
+        return "🟠 Speculative low"
+
+    if not near_lows.empty:
+        proximity = (5 - near_lows["From 52W Low %"].clip(0, 5)) / 5 * 100
+        oversold = ((50 - near_lows["RSI 14"].fillna(50)).clip(0, 25) / 25) * 100
+        near_lows["52W Low Opportunity Score"] = (
+            near_lows["Alpha Business Score"].fillna(0) * 0.35
+            + (near_lows["Financial Strength"].fillna(0) / 20 * 100) * 0.20
+            + (near_lows["Valuation Score"].fillna(0) / 10 * 100) * 0.15
+            + near_lows["Accumulation Score"].fillna(0) * 0.10
+            + oversold * 0.10
+            + proximity * 0.10
+        ).clip(0, 100).round(1)
+        near_lows["Low Zone Type"] = near_lows.apply(low_zone_type, axis=1)
+        near_lows = near_lows.sort_values(
+            ["52W Low Opportunity Score", "Alpha Business Score", "From 52W Low %"],
+            ascending=[False, False, True],
+        ).head(25)
+
+    if near_lows.empty:
+        st.info("No scanned companies are currently within 5% above their 52-week low.")
+    else:
+        n1, n2, n3 = st.columns(3)
+        n1.metric("Near yearly lows", len(near_lows))
+        n2.metric("Quality candidates", int(near_lows["Low Zone Type"].eq("🟢 Quality company near its low").sum()))
+        n3.metric("Top low-zone opportunity", near_lows.iloc[0]["Ticker"])
+        low_cols = [
+            "Ticker", "Company", "Price", "52W Low", "From 52W Low %",
+            "52W Low Opportunity Score", "Low Zone Type", "Alpha Business Score",
+            "Financial Strength", "Revenue Growth %", "FCF Margin %", "Debt Quality",
+            "Accumulation Score", "RSI 14", "200D MA Slope %", "TradingView"
+        ]
+        low_cols = [c for c in low_cols if c in near_lows.columns]
+        st.dataframe(
+            near_lows[low_cols], use_container_width=True, hide_index=True,
+            column_config={
+                "Price": st.column_config.NumberColumn(format="$%.2f"),
+                "52W Low": st.column_config.NumberColumn(format="$%.2f"),
+                "From 52W Low %": st.column_config.NumberColumn(format="%.2f%%"),
+                "52W Low Opportunity Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Alpha Business Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "Financial Strength": st.column_config.NumberColumn(format="%.1f / 20"),
+                "Revenue Growth %": st.column_config.NumberColumn(format="%.2f%%"),
+                "FCF Margin %": st.column_config.NumberColumn(format="%.2f%%"),
+                "Accumulation Score": st.column_config.ProgressColumn(format="%.1f", min_value=0, max_value=100),
+                "RSI 14": st.column_config.NumberColumn(format="%.1f"),
+                "200D MA Slope %": st.column_config.NumberColumn(format="%.2f%%"),
+                "TradingView": st.column_config.LinkColumn("Chart", display_text="Open"),
+            },
         )
 
     st.subheader("💎 Hidden Gems Under $20")
